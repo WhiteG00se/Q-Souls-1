@@ -47,55 +47,53 @@ try {
         throw 'Close Dark Souls Remastered before using this launcher.'
     }
     $repository = Split-Path -Parent $PSScriptRoot
+    $runtime = Join-Path $repository 'runtime\QSoulsRuntime.dll'
+    foreach ($required in @($runtime, (Join-Path $repository 'assets\audio\title-theme.wav'))) {
+        if (-not (Test-Path -LiteralPath $required -PathType Leaf)) { throw "Missing required mod file: $required" }
+    }
+    $dlls = @($runtime)
     $optionalRoot = Join-Path $repository 'SeamlessCoop_here'
     $packageFiles = @(Get-ChildItem -LiteralPath $optionalRoot -Force -ErrorAction SilentlyContinue |
         Where-Object { $_.Name -ne '.gitkeep' })
-    $dll = Join-Path $optionalRoot 'SeamlessCoop\ds1sc.dll'
     if ($packageFiles.Count -gt 0) {
         foreach ($required in @('SeamlessCoop\ds1sc.dll', 'SeamlessCoop\ds1sc_settings.ini', 'SeamlessCoop\locale\english.json')) {
             if (-not (Test-Path -LiteralPath (Join-Path $optionalRoot $required) -PathType Leaf)) {
                 throw "Incomplete Seamless Co-op package: missing $required. Extract the entire Nexus download into SeamlessCoop_here."
             }
         }
-        Add-Type -Path (Join-Path $PSScriptRoot 'ExternalModLauncher.cs')
-        Write-Host 'Mode: Seamless Co-op (external DLL)'
-        if ($CheckOnly) { Write-Host 'Checks passed; game not launched.'; exit 0 }
-        # The game resolves assets relative to its working directory. Junctions let it
-        # read installed assets while keeping mod-generated files outside the install.
-        $runtimeRoot = Join-Path $repository '.local\game'
-        New-Item -ItemType Directory -Path $runtimeRoot -Force | Out-Null
-        $assetDirectories = @(Get-ChildItem -LiteralPath $gamePath -Directory |
-            Where-Object { $_.Name -ne 'SeamlessCoop' })
-        foreach ($directory in $assetDirectories) {
-            $linkPath = Join-Path $runtimeRoot $directory.Name
-            if (Test-Path -LiteralPath $linkPath) {
-                $existing = Get-Item -LiteralPath $linkPath -Force
-                if ($existing.LinkType -ne 'Junction' -or
-                    [IO.Path]::GetFullPath([string]$existing.Target[0]) -ne [IO.Path]::GetFullPath($directory.FullName)) {
-                    throw "Unexpected runtime asset path: $linkPath. Move .local aside and retry."
-                }
-            }
-            else {
-                New-Item -ItemType Junction -Path $linkPath -Target $directory.FullName | Out-Null
-            }
-        }
-        $previousAppId = $env:SteamAppId
-        $previousGameId = $env:SteamGameId
-        try {
-            $env:SteamAppId = '570940'
-            $env:SteamGameId = '570940'
-            $gameId = [ExternalModLauncher]::Launch((Join-Path $gamePath 'DarkSoulsRemastered.exe'), $runtimeRoot, $dll)
-            Write-Host "Seamless Co-op DLL loaded. Game process: $gameId"
-        }
-        finally {
-            $env:SteamAppId = $previousAppId
-            $env:SteamGameId = $previousGameId
-        }
+        $dlls += Join-Path $optionalRoot 'SeamlessCoop\ds1sc.dll'
+        Write-Host 'Mode: Q-Souls-1 + Seamless Co-op'
     }
-    else {
-        Write-Host 'Mode: vanilla (no optional mod installed)'
-        if ($CheckOnly) { Write-Host 'Checks passed; game not launched.'; exit 0 }
-        Start-Process 'steam://rungameid/570940'
+    else { Write-Host 'Mode: Q-Souls-1' }
+    Add-Type -Path (Join-Path $PSScriptRoot 'ExternalModLauncher.cs')
+    if ($CheckOnly) { Write-Host 'Checks passed; game not launched.'; exit 0 }
+    # Keep the working directory external; the game reads installed assets through junctions.
+    $runtimeRoot = Join-Path $repository '.local\game'
+    New-Item -ItemType Directory -Path $runtimeRoot -Force | Out-Null
+    $assetDirectories = @(Get-ChildItem -LiteralPath $gamePath -Directory |
+        Where-Object { $_.Name -ne 'SeamlessCoop' })
+    foreach ($directory in $assetDirectories) {
+        $linkPath = Join-Path $runtimeRoot $directory.Name
+        if (Test-Path -LiteralPath $linkPath) {
+            $existing = Get-Item -LiteralPath $linkPath -Force
+            if ($existing.LinkType -ne 'Junction' -or
+                [IO.Path]::GetFullPath([string]$existing.Target[0]) -ne [IO.Path]::GetFullPath($directory.FullName)) {
+                throw "Unexpected runtime asset path: $linkPath. Move .local aside and retry."
+            }
+        }
+        else { New-Item -ItemType Junction -Path $linkPath -Target $directory.FullName | Out-Null }
+    }
+    $previousAppId = $env:SteamAppId
+    $previousGameId = $env:SteamGameId
+    try {
+        $env:SteamAppId = '570940'
+        $env:SteamGameId = '570940'
+        $gameId = [ExternalModLauncher]::Launch((Join-Path $gamePath 'DarkSoulsRemastered.exe'), $runtimeRoot, [string[]]$dlls)
+        Write-Host "Mod loaded. Game process: $gameId"
+    }
+    finally {
+        $env:SteamAppId = $previousAppId
+        $env:SteamGameId = $previousGameId
     }
     exit 0
 }
@@ -103,4 +101,3 @@ catch {
     Write-Host $_.Exception.Message -ForegroundColor Red
     exit 1
 }
-
