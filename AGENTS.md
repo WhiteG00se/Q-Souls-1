@@ -10,3 +10,4 @@
 - Do not add game files or third-party mods without permission. Keep user-supplied optional mods and extracted game data out of Git.
 - Shared SDKs/tools live under D:/AI. Keep temporary files under `D:\AI\Temp\Q-Souls-1`, outside Git.
 - Never commit or push unless requested.
+- Only the user performs E2E testing. Do not launch or control the game for testing; limit agent checks to builds, static checks, and isolated tests.
