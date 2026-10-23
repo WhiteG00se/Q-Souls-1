@@ -1,10 +1,6 @@
-- Compatible with Steam save game cloud sync, but only load modded saves in the modded game and vice versa
-- No need to copy/move any files; just start `_launch-Q-Souls-1.bat`.
+# Q-Souls-1
 
-## Installation
-
-<!-- Add installation instructions here. -->
-
-## Features
-
-<!-- Add features here. -->
+1. Download and extract this repository's GitHub ZIP, or clone it.
+2. Optional: download the latest [Seamless Co-op](https://www.nexusmods.com/darksoulsremastered/mods/899?tab=files) and extract everything into `SeamlessCoop_here`.
+3. For co-op, set a session password in `SeamlessCoop_here/SeamlessCoop/ds1sc_settings.ini`; everyone must use the same password.
+4. Keep Steam running and run `_launch-Q-Souls-1.bat`.
