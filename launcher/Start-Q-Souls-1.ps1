@@ -48,7 +48,7 @@ try {
     }
     $repository = Split-Path -Parent $PSScriptRoot
     $runtime = Join-Path $repository 'runtime\QSoulsRuntime.dll'
-    foreach ($required in @($runtime, (Join-Path $repository 'assets\audio\title-theme.wav'))) {
+    foreach ($required in @($runtime, (Join-Path $repository 'VERSION'), (Join-Path $repository 'assets\audio\title-theme.wav'))) {
         if (-not (Test-Path -LiteralPath $required -PathType Leaf)) { throw "Missing required mod file: $required" }
     }
     $dlls = @($runtime)

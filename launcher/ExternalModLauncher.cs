@@ -105,7 +105,7 @@ public static class ExternalModLauncher
             Check(entry != IntPtr.Zero, "Q-Souls runtime initialization export is missing.");
             IntPtr remoteEntry = new IntPtr(remoteModule.ToInt64() + entry.ToInt64() - localModule.ToInt64());
             uint code = RemoteCall(process, remoteEntry, IntPtr.Zero);
-            if (code != 0) throw new InvalidOperationException("Title music initialization failed (code " + code +
+            if (code != 0) throw new InvalidOperationException("Q-Souls runtime initialization failed (code " + code +
                 "). Check .local/title-music.log.");
         }
         finally { FreeLibrary(localModule); }

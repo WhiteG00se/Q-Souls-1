@@ -70,6 +70,7 @@ int wmain(int argc, wchar_t **argv)
     optionsGlobal = (uintptr_t)&managerPointer;
     // No game event system, category lookup, or button event exists yet.
     openMovie("movww\\frpg_title.bik", 0);
+    CHECK(titleOverlayVisible(), "version visible on title entry");
     updateMusic();
     CHECK(musicChannel && titleSystem && !musicGroup, "playback starts without the game's mixer");
     CHECK(!rejectedOpens, "memory stream bypasses file callbacks");
@@ -79,6 +80,7 @@ int wmain(int argc, wchar_t **argv)
     CHECK(!optionsLoaded, "zero-filled live options remain pending");
     void *firstChannel = musicChannel;
     closeMovie(titleMovie); updateMusic();
+    CHECK(titleOverlayVisible(), "version remains visible after short title video");
     CHECK(musicChannel == firstChannel, "music continues after short title video closes");
 
     void *eventSystem = NULL, *system = NULL, *category = NULL;
@@ -111,6 +113,20 @@ int wmain(int argc, wchar_t **argv)
     CHECK(optionsLoaded && titleGain() == 0.0f, "all-zero live settings honored AFTER initialization");
     CHECK(!releaseEvents(eventSystem), "mixer teardown");
     CHECK(!musicChannel && !musicSound && !titleSystem && !trackData && !musicGroup, "resources released");
+    CHECK(!titleOverlayVisible(), "version hidden after title state is cleared");
+    openMovie("movww\\opening.bik", 0);
+    CHECK(!titleOverlayVisible(), "version hidden during other cinematics");
+    openMovie("movww\\frpg_title.bik", 0);
+    CHECK(titleOverlayVisible(), "version restored on returning to title");
+    uintptr_t camera[13] = {0}, player[13] = {0}, cameraPointer = (uintptr_t)camera;
+    camera[12] = (uintptr_t)player; player[12] = 1;
+    cameraGlobal = (uintptr_t)&cameraPointer;
+    CHECK(!titleOverlayVisible(), "version hidden immediately when gameplay loads");
+    updateMusic();
+    CHECK(!InterlockedCompareExchange(&active, 0, 0), "gameplay clears title state");
+    cameraGlobal = 0;
+    openMovie("movww\\frpg_title.bik", 0);
+    CHECK(titleOverlayVisible(), "version restored after gameplay and title return");
     CloseHandle(changed); DeleteCriticalSection(&audioLock);
     puts("PASS: zero-filled startup options, saved mute, profile handoff, 40 percent gain, live scaling, mute, teardown.");
     return 0;

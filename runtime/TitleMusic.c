@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <wchar.h>
+#include "TitleOverlay.h"
 
 static HMODULE self;
 static HANDLE changed, ready;
@@ -337,6 +338,11 @@ static BOOL gameplayLoaded(void)
     return TRUE;
 }
 
+static BOOL titleOverlayVisible(void)
+{
+    return InterlockedCompareExchange(&active, 0, 0) != 0 && !gameplayLoaded();
+}
+
 // Playback does not wait for the game to expose or update its music mixer.
 static void updateMusic(void)
 {
@@ -475,6 +481,9 @@ __declspec(dllexport) DWORD WINAPI InitializeQSouls(void *unused)
     cameraGlobal = findCameraGlobal();
     optionsGlobal = findOptionsGlobal();
     if (!cameraGlobal || !optionsGlobal) return ERROR_REVISION_MISMATCH;
+    DWORD overlayError = initializeTitleOverlay(root, findImport("dxgi.dll", "CreateDXGIFactory"),
+                                                titleOverlayVisible, logMessage);
+    if (overlayError) return overlayError;
     void **openSlot = findImport("binkw64.dll", "BinkOpen"), **closeSlot = findImport("binkw64.dll", "BinkClose");
     HMODULE bink = GetModuleHandleW(L"binkw64.dll");
     soundOnOff = (void *)GetProcAddress(bink, "BinkSetSoundOnOff");
