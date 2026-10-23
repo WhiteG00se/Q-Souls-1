@@ -65,6 +65,9 @@ try {
         Write-Host 'Mode: Q-Souls-1 + Seamless Co-op'
     }
     else { Write-Host 'Mode: Q-Souls-1' }
+    . (Join-Path $PSScriptRoot 'Read-SavedAudioLevels.ps1')
+    $savedAudio = Get-ProfileAudioLevels -Seamless ($packageFiles.Count -gt 0)
+    Write-Host ("Saved music level: {0}/10" -f $savedAudio[0])
     Add-Type -Path (Join-Path $PSScriptRoot 'ExternalModLauncher.cs')
     if ($CheckOnly) { Write-Host 'Checks passed; game not launched.'; exit 0 }
     # Keep the working directory external; the game reads installed assets through junctions.
@@ -85,15 +88,18 @@ try {
     }
     $previousAppId = $env:SteamAppId
     $previousGameId = $env:SteamGameId
+    $previousAudio = $env:QSOULS_SAVED_AUDIO
     try {
         $env:SteamAppId = '570940'
         $env:SteamGameId = '570940'
+        $env:QSOULS_SAVED_AUDIO = $savedAudio -join ','
         $gameId = [ExternalModLauncher]::Launch((Join-Path $gamePath 'DarkSoulsRemastered.exe'), $runtimeRoot, [string[]]$dlls)
         Write-Host "Mod loaded. Game process: $gameId"
     }
     finally {
         $env:SteamAppId = $previousAppId
         $env:SteamGameId = $previousGameId
+        $env:QSOULS_SAVED_AUDIO = $previousAudio
     }
     exit 0
 }
