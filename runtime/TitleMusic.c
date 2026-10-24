@@ -4,6 +4,8 @@
 #include <stdio.h>
 #include <string.h>
 #include <wchar.h>
+#include <wctype.h>
+#include <ctype.h>
 #include "TitleOverlay.h"
 #include "IntroSkip.h"
 
@@ -462,6 +464,8 @@ static BOOL replaceImport(void **slot, void *replacement)
     return VirtualProtect(slot, sizeof(*slot), oldProtect, &ignored);
 }
 
+#include "ParamOverride.h"
+
 // Explicit initialization lets the launcher report a failure before starting the game.
 __declspec(dllexport) DWORD WINAPI InitializeQSouls(void *unused)
 {
@@ -478,6 +482,8 @@ __declspec(dllexport) DWORD WINAPI InitializeQSouls(void *unused)
     if (swprintf(trackPath, MAX_PATH, L"%ls\\assets\\audio\\title-theme.wav", root) < 0 ||
         swprintf(logPath, MAX_PATH, L"%ls\\.local\\title-music.log", root) < 0)
         return ERROR_BUFFER_OVERFLOW;
+    DWORD parameterError = initializeParamOverride(root);
+    if (parameterError) return parameterError;
     readStartupAudio();
     cameraGlobal = findCameraGlobal();
     optionsGlobal = findOptionsGlobal();

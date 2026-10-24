@@ -69,12 +69,13 @@ try {
     $savedAudio = Get-ProfileAudioLevels -Seamless ($packageFiles.Count -gt 0)
     Write-Host ("Saved music level: {0}/10" -f $savedAudio[0])
     Add-Type -Path (Join-Path $PSScriptRoot 'ExternalModLauncher.cs')
-    if ($CheckOnly) { Write-Host 'Checks passed; game not launched.'; exit 0 }
-    # Keep the working directory external; the game reads installed assets through junctions.
+    # Keep generated parameters external; other assets are read through junctions.
     $runtimeRoot = Join-Path $repository '.local\game'
-    New-Item -ItemType Directory -Path $runtimeRoot -Force | Out-Null
+    . (Join-Path $PSScriptRoot 'Initialize-StartingClasses.ps1')
+    Initialize-StartingClasses -GamePath $gamePath -RuntimeRoot $runtimeRoot -ValidateOnly:$CheckOnly
+    if ($CheckOnly) { Write-Host 'Checks passed; game not launched.'; exit 0 }
     $assetDirectories = @(Get-ChildItem -LiteralPath $gamePath -Directory |
-        Where-Object { $_.Name -ne 'SeamlessCoop' })
+        Where-Object { $_.Name -notin @('SeamlessCoop', 'param') })
     foreach ($directory in $assetDirectories) {
         $linkPath = Join-Path $runtimeRoot $directory.Name
         if (Test-Path -LiteralPath $linkPath) {

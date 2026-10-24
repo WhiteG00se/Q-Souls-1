@@ -7,3 +7,4 @@
 
 The title-menu version is read from `VERSION.txt` at launch
 Startup intro is skipped
+All starting classes: SL 1, Vitality 12, every other stat 10

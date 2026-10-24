@@ -12,6 +12,14 @@ New-Item -ItemType Directory -Path $temporary -Force | Out-Null
 $cppCompiler = Join-Path (Split-Path -Parent $Compiler) 'clang++.exe'
 $common = @('--target=x86_64-w64-mingw32', '-O2', '-Wall', '-Wextra', '-Werror')
 $cpp = @('-std=c++17', '-static', '-fno-exceptions', '-fno-rtti')
+& $Compiler @common (Join-Path $PSScriptRoot 'Test-ParamOverride.c') -municode -o (Join-Path $temporary 'Test-ParamOverride.exe')
+if ($LASTEXITCODE -ne 0) { throw 'Parameter redirection test build failed.' }
+$parameterFixture = Join-Path $temporary ([Guid]::NewGuid().ToString())
+$parameterDirectory = Join-Path $parameterFixture '.local\game\param\GameParam'
+New-Item -ItemType Directory -Path $parameterDirectory -Force | Out-Null
+[IO.File]::WriteAllBytes((Join-Path $parameterDirectory 'GameParam.parambnd.dcx'), [Text.Encoding]::ASCII.GetBytes('TEST'))
+& (Join-Path $temporary 'Test-ParamOverride.exe') (Join-Path $game 'DarkSoulsRemastered.exe') $parameterFixture
+if ($LASTEXITCODE -ne 0) { throw 'Parameter redirection tests failed.' }
 & $Compiler @common (Join-Path $PSScriptRoot 'Test-IntroSkip.c') -municode -o (Join-Path $temporary 'Test-IntroSkip.exe')
 if ($LASTEXITCODE -ne 0) { throw 'Intro-skip test build failed.' }
 & (Join-Path $temporary 'Test-IntroSkip.exe') (Join-Path $game 'DarkSoulsRemastered.exe')
