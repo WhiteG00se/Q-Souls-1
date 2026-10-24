@@ -56,7 +56,7 @@ function Get-ProfileAudioLevels {
     param([bool]$Seamless, [ValidatePattern('^[a-zA-Z0-9]{1,120}$')][string]$SaveExtension)
     $root = Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'NBGI\DARK SOULS REMASTERED'
     if (-not (Test-Path -LiteralPath $root -PathType Container)) { return Read-SavedAudioLevels }
-    if (-not $SaveExtension) { $SaveExtension = if ($Seamless) { 'co2' } else { 'sl2' } }
+    if (-not $SaveExtension) { $SaveExtension = 'sl2' }
     $filename = 'DRAKS0005.' + $SaveExtension
     $account = (Get-ItemProperty -LiteralPath 'HKCU:\Software\Valve\Steam\ActiveProcess' -ErrorAction SilentlyContinue).ActiveUser
     if ($account) {

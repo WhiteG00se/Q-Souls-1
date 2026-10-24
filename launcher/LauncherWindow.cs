@@ -9,7 +9,7 @@ using System.Xml.Serialization;
 
 [assembly: System.Runtime.Versioning.TargetFramework(".NETFramework,Version=v4.8", FrameworkDisplayName = ".NET Framework 4.8")]
 
-public class LauncherSettings { public bool Seamless = true; }
+public class LauncherSettings { public bool Seamless = true; public string SaveMode = "sl2"; public string CustomSaveExtension = ""; }
 
 public static class LauncherFiles
 {
@@ -29,6 +29,14 @@ public static class LauncherFiles
         if (!Regex.IsMatch(body.Value, @"(?im)^\s*cooppassword\s*="))
             throw new InvalidOperationException("The Seamless settings are missing cooppassword.");
         string updated = Regex.Replace(body.Value, @"(?im)^([ \t]*cooppassword[ \t]*=[ \t]*)[^\r\n]*", m => m.Groups[1].Value + password);
+        return text.Substring(0, body.Index) + updated + text.Substring(body.Index + body.Length);
+    }
+    public static string SetSaveExtension(string text, string extension) {
+        if (!Regex.IsMatch(extension ?? "", "^[a-zA-Z0-9]{1,120}$")) throw new InvalidOperationException("Enter a save extension using 1 to 120 letters or numbers after the dot.");
+        Match section = Regex.Match(text, @"(?ims)^\s*\[SAVE\][^\r\n]*\r?\n(?<body>.*?)(?=^\s*\[|\z)");
+        if (!section.Success || !Regex.IsMatch(section.Groups["body"].Value, @"(?im)^[ \t]*save_file_extension[ \t]*=")) throw new InvalidOperationException("The Seamless settings are missing save_file_extension in [SAVE].");
+        Group body = section.Groups["body"];
+        string updated = Regex.Replace(body.Value, @"(?im)^([ \t]*save_file_extension[ \t]*=[ \t]*)[^\r\n]*", m => m.Groups[1].Value + extension);
         return text.Substring(0, body.Index) + updated + text.Substring(body.Index + body.Length);
     }
     public static void RequireRealDirectory(string path)
@@ -58,20 +66,29 @@ public sealed class LauncherWindow : Form
     readonly string repository, settingsPath, iniPath;
     readonly CheckBox seamless = new CheckBox();
     readonly TextBox password = new TextBox();
+    readonly RadioButton sl2 = new RadioButton(), co2 = new RadioButton(), custom = new RadioButton();
+    readonly TextBox customExtension = new TextBox();
+    readonly Panel customExtensionRow = new Panel(), customExtensionGroup = new Panel();
+    readonly Label customExtensionPrefix = new Label();
     readonly Label saveInfo = new Label(), status = new Label();
     readonly Label installedSouls = new Label(), newestSouls = new Label(), installedCoop = new Label(), newestCoop = new Label(), zipHint = new Label();
     readonly Button play = new Button(), check = new Button();
     readonly Button downloadCoop = new Button(), update = new Button();
-    readonly TextBox details = new TextBox();
-    readonly TableLayoutPanel layout;
-    bool fittingContent;
+    readonly RichTextBox details = new RichTextBox();
+    readonly TableLayoutPanel layout, versionGroup, coopGroup, saveGroup;
+    bool fittingContent, fitQueued;
     readonly BackgroundWorker worker = new BackgroundWorker(), versionWorker = new BackgroundWorker();
     readonly BackgroundWorker saveWorker = new BackgroundWorker();
     readonly System.Windows.Forms.Timer saveTimer = new System.Windows.Forms.Timer { Interval = 250 };
-    sealed class SettingsChange { public bool Seamless; public string Password; public int Revision; }
+    sealed class SettingsChange { public bool Seamless; public string Password; public string SaveMode; public string CustomExtension; public int Revision; }
     SettingsChange saving;
     int saveRevision, savedRevision;
-    bool saveFailed, closeAfterSave;
+    bool saveFailed, closeAfterSave, showInstallSuccess;
+    const string PasswordPrompt = "Enter a co-op password. Everyone in your party must use the same password.";
+    const string Sl2Remark = "Vanilla, works with Steam cloud sync.\r\nOnly load modded saves in the modded game and vice versa.";
+    const string Co2Remark = "Default for Seemless Co-op. Doesn't work with Steam cloud sync.";
+    const string CustomRemark = "I hope you know what you're doing!";
+    const string InstallSuccess = "Seamless Co-op installed successfully";
     readonly Font boldVersionFont;
     PublishedVersion newest;
     bool checking, wasInstalled, restarting;
@@ -88,31 +105,35 @@ public sealed class LauncherWindow : Form
         using (var stream = typeof(LauncherWindow).Assembly.GetManifestResourceStream("QS1.ico"))
         using (var icon = new Icon(stream)) Icon = (Icon)icon.Clone();
         StartPosition = FormStartPosition.CenterScreen;
+        MaximizeBox = false;
         ClientSize = new Size(610, 400); MinimumSize = new Size(570, 0);
         AutoScaleDimensions = new SizeF(96F, 96F); AutoScaleMode = AutoScaleMode.Dpi;
         Font = new Font("Segoe UI", 10);
         boldVersionFont = new Font(Font, FontStyle.Bold);
         layout = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(20), ColumnCount = 1, AutoScroll = true };
+        layout.SuspendLayout();
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100)); Controls.Add(layout);
+        versionGroup = CreateSettingsGroup(); coopGroup = CreateSettingsGroup(); saveGroup = CreateSettingsGroup();
+        layout.Controls.Add(versionGroup); layout.Controls.Add(coopGroup); layout.Controls.Add(saveGroup);
         string version = File.Exists(Path.Combine(root, "VERSION.txt")) ? File.ReadAllText(Path.Combine(root, "VERSION.txt")).Trim() : "Unknown";
-        installedSouls.Text = "Installed Q Souls 1 Version: v" + version; installedSouls.AutoSize = true; layout.Controls.Add(installedSouls);
-        newestSouls.Text = "Newest Q Souls 1 Version: Checking..."; newestSouls.AutoSize = true; layout.Controls.Add(newestSouls);
-        var updateRow = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill };
+        installedSouls.Text = "Installed Q Souls 1 Version: v" + version; installedSouls.AutoSize = true; versionGroup.Controls.Add(installedSouls);
+        newestSouls.Text = "Newest Q Souls 1 Version: Checking..."; newestSouls.AutoSize = true; versionGroup.Controls.Add(newestSouls);
+        var updateRow = new FlowLayoutPanel { AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, Dock = DockStyle.Fill };
         update.Text = "Update to Q Souls 1"; update.AutoSize = true; update.Enabled = false;
         update.Click += delegate { BeginOperation("update"); };
-        updateRow.Controls.Add(update); layout.Controls.Add(updateRow);
-        seamless.Text = "Enable Seamless Co-op"; seamless.AutoSize = true; layout.Controls.Add(seamless);
-        installedCoop.AutoSize = true; layout.Controls.Add(installedCoop);
-        newestCoop.Text = "Newest Seamless Co-op Version: Checking..."; newestCoop.AutoSize = true; layout.Controls.Add(newestCoop);
+        updateRow.Controls.Add(update); versionGroup.Controls.Add(updateRow);
+        seamless.Text = "Enable Seamless Co-op"; seamless.AutoSize = true; coopGroup.Controls.Add(seamless);
+        installedCoop.AutoSize = true; coopGroup.Controls.Add(installedCoop);
+        newestCoop.Text = "Newest Seamless Co-op Version: Checking..."; newestCoop.AutoSize = true; coopGroup.Controls.Add(newestCoop);
         downloadCoop.Text = "Open Seamless Co-op Download Page"; downloadCoop.AutoSize = true;
         downloadCoop.Click += delegate {
             zipHint.Visible = true;
             try { Process.Start(new ProcessStartInfo("https://www.nexusmods.com/darksoulsremastered/mods/899?tab=files") { UseShellExecute = true }); }
             catch (Exception ex) { ShowError(ex); }
         };
-        layout.Controls.Add(downloadCoop);
+        coopGroup.Controls.Add(downloadCoop);
         zipHint.Text = "Drag the downloaded ZIP file onto this window to install Seamless Co-op.";
-        zipHint.AutoSize = true; zipHint.MaximumSize = new Size(550, 0); zipHint.Visible = false; layout.Controls.Add(zipHint);
+        zipHint.AutoSize = true; zipHint.MaximumSize = new Size(550, 0); zipHint.Visible = false; coopGroup.Controls.Add(zipHint);
         AllowDrop = true;
         DragEnter += delegate(object sender, DragEventArgs e) {
             var files = e.Data.GetData(DataFormats.FileDrop) as string[];
@@ -122,11 +143,26 @@ public sealed class LauncherWindow : Form
             var files = e.Data.GetData(DataFormats.FileDrop) as string[];
             if (files != null && files.Length == 1) InstallArchive(files[0]);
         };
-        var passwordRow = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill };
+        var passwordRow = new FlowLayoutPanel { AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, Dock = DockStyle.Fill };
         passwordRow.Controls.Add(new Label { Text = "Co-op password:", AutoSize = true, Margin = new Padding(0, 6, 12, 0) });
         password.Width = 230; password.UseSystemPasswordChar = false; passwordRow.Controls.Add(password);
-        layout.Controls.Add(passwordRow);
-        saveInfo.AutoSize = true; saveInfo.MaximumSize = new Size(550, 0); layout.Controls.Add(saveInfo);
+        password.KeyDown += PasswordKeyDown;
+        coopGroup.Controls.Add(passwordRow);
+        var saveModes = new FlowLayoutPanel { AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, Dock = DockStyle.Fill };
+        saveModes.Controls.Add(new Label { Text = "Savegame:", AutoSize = true, Margin = new Padding(0, 7, 12, 0) });
+        sl2.Text = ".sl2"; co2.Text = ".co2"; custom.Text = "custom";
+        foreach (var mode in new[] { sl2, co2, custom }) { mode.Appearance = Appearance.Button; mode.AutoSize = true; mode.TextAlign = ContentAlignment.MiddleCenter; saveModes.Controls.Add(mode); }
+        sl2.Checked = true; saveGroup.Controls.Add(saveModes);
+        customExtensionRow.Height = 34; customExtensionRow.Dock = DockStyle.Fill;
+        customExtensionGroup.Size = new Size(210, 30); customExtensionGroup.BorderStyle = BorderStyle.FixedSingle; customExtensionGroup.BackColor = SystemColors.Window;
+        customExtensionPrefix.Text = "."; customExtensionPrefix.Dock = DockStyle.Left; customExtensionPrefix.Width = 28;
+        customExtensionPrefix.TextAlign = ContentAlignment.MiddleCenter; customExtensionPrefix.BackColor = Color.FromArgb(235, 237, 240); customExtensionPrefix.ForeColor = SystemColors.GrayText;
+        var customEntry = new Panel { Dock = DockStyle.Fill, Padding = new Padding(7, 4, 7, 3), BackColor = SystemColors.Window };
+        customExtension.BorderStyle = BorderStyle.None; customExtension.Dock = DockStyle.Fill;
+        customEntry.Controls.Add(customExtension); customExtensionGroup.Controls.Add(customEntry); customExtensionGroup.Controls.Add(customExtensionPrefix);
+        customExtensionPrefix.Click += delegate { customExtension.Focus(); };
+        customExtensionRow.Controls.Add(customExtensionGroup); saveGroup.Controls.Add(customExtensionRow);
+        saveInfo.AutoSize = false; saveInfo.Dock = DockStyle.Fill; saveInfo.MaximumSize = new Size(550, 0); saveGroup.Controls.Add(saveInfo);
         var openSaves = new Button { Text = "Open savefile folder", AutoSize = true };
         openSaves.Click += delegate {
             try {
@@ -135,20 +171,26 @@ public sealed class LauncherWindow : Form
                 Process.Start(new ProcessStartInfo("explorer.exe", "\"" + path + "\"") { UseShellExecute = true });
             } catch (Exception ex) { ShowError(ex); }
         };
-        var actions = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill };
+        var actions = new FlowLayoutPanel { AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, Dock = DockStyle.Fill };
         play.Text = "Play"; check.Text = "Verify setup";
         foreach (Button button in new[] { play, openSaves, check }) { button.AutoSize = true; actions.Controls.Add(button); }
-        layout.Controls.Add(actions);
-        status.AutoSize = true; status.MaximumSize = new Size(550, 0); status.Text = "Ready. Keep Steam running and signed in."; layout.Controls.Add(status);
-        details.Multiline = true; details.ReadOnly = true; details.ScrollBars = ScrollBars.Vertical;
+        saveGroup.Controls.Add(actions);
+        status.AutoSize = true; status.MaximumSize = new Size(550, 0); status.Text = "Ready. Keep Steam running and signed in."; saveGroup.Controls.Add(status);
+        details.Multiline = true; details.ReadOnly = true; details.DetectUrls = false; details.ScrollBars = RichTextBoxScrollBars.Vertical;
         details.AutoSize = false; details.Dock = DockStyle.Fill; details.MinimumSize = new Size(100, 0); layout.Controls.Add(details);
+        FinishSettingsRows(versionGroup); FinishSettingsRows(coopGroup); FinishSettingsRows(saveGroup);
         layout.RowStyles.Clear();
         layout.RowCount = layout.Controls.Count;
-        for (int i = 0; i < layout.Controls.Count; i++) layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        details.TextChanged += delegate { FitToContent(); };
-        layout.Layout += delegate { FitToContent(); };
-        ClientSizeChanged += delegate { FitToContent(); };
-        DpiChanged += delegate { FitToContent(); };
+        for (int i = 0; i < layout.Controls.Count; i++) {
+            layout.SetCellPosition(layout.Controls[i], new TableLayoutPanelCellPosition(0, i));
+            layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        }
+        details.TextChanged += delegate { ColorOutput(); RequestFit(); };
+        layout.Layout += delegate { RequestFit(); };
+        ClientSizeChanged += delegate { RequestFit(); };
+        DpiChanged += delegate { ConstrainToScreen(); RequestFit(); };
+        LocationChanged += delegate { ConstrainToScreen(); };
+        Load += delegate { FitToContent(); };
         play.Click += delegate { Run(false); }; check.Click += delegate { if (SettingsReady()) { RefreshVersions(); BeginOperation("setup", seamless.Checked ? "Enabled" : "Disabled"); } };
         seamless.CheckedChanged += delegate { UpdateSaveInfo(); };
         FormClosing += delegate(object sender, FormClosingEventArgs e) {
@@ -177,39 +219,173 @@ public sealed class LauncherWindow : Form
         var settings = new LauncherSettings();
         if (File.Exists(settingsPath)) using (var reader = File.OpenRead(settingsPath)) settings = (LauncherSettings)new XmlSerializer(typeof(LauncherSettings)).Deserialize(reader);
         seamless.Checked = settings.Seamless && Installed();
+        customExtension.Text = settings.CustomSaveExtension ?? "";
+        if (settings.SaveMode == "co2") co2.Checked = true;
+        else if (settings.SaveMode == "custom") custom.Checked = true;
         if (File.Exists(iniPath)) password.Text = LauncherFiles.ReadValue(File.ReadAllText(iniPath), "PASSWORD", "cooppassword", "");
         saveTimer.Tick += delegate { saveTimer.Stop(); StartSaving(); };
         saveWorker.DoWork += delegate(object sender, DoWorkEventArgs e) {
             var change = (SettingsChange)e.Argument;
-            PersistSettings(change.Seamless, change.Password);
+            PersistSettings(change.Seamless, change.Password, change.SaveMode, change.CustomExtension);
         };
         saveWorker.RunWorkerCompleted += SaveCompleted;
         seamless.CheckedChanged += delegate { QueueSave(); };
         password.TextChanged += delegate { QueueSave(); };
+        foreach (var mode in new[] { sl2, co2, custom }) mode.CheckedChanged += delegate(object sender, EventArgs e) { if (((RadioButton)sender).Checked) { UpdateSaveInfo(); QueueSave(); } };
+        customExtension.TextChanged += delegate { UpdateSaveInfo(); QueueSave(); };
         QueueSave();
-        UpdateSaveInfo(); ResumeLayout(true);
+        UpdateSaveInfo(); versionGroup.ResumeLayout(true); coopGroup.ResumeLayout(true); saveGroup.ResumeLayout(true); layout.ResumeLayout(true); ResumeLayout(true);
         Shown += delegate { FitToContent(); if (onlineChecks) RefreshVersions(); };
     }
+    TableLayoutPanel CreateSettingsGroup() {
+        var group = new TableLayoutPanel {
+            ColumnCount = 1, AutoSize = false,
+            Dock = DockStyle.Fill, Padding = new Padding(10), Margin = new Padding(3, 3, 3, 8),
+            BackColor = Color.FromArgb(250, 250, 250)
+        };
+        group.SuspendLayout(); group.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        group.Paint += delegate(object sender, PaintEventArgs e) {
+            using (var border = new Pen(Color.FromArgb(213, 216, 220))) e.Graphics.DrawRectangle(border, 0, 0, group.Width - 1, group.Height - 1);
+        };
+        group.Layout += delegate { RequestFit(); };
+        return group;
+    }
+    static void FinishSettingsRows(TableLayoutPanel group) {
+        group.RowStyles.Clear(); group.RowCount = group.Controls.Count;
+        for (int i = 0; i < group.Controls.Count; i++) {
+            group.SetCellPosition(group.Controls[i], new TableLayoutPanelCellPosition(0, i));
+            group.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        }
+    }
+    int ContentRowHeight(Control control, int width, float scale) {
+        if (control == zipHint && !zipHint.Visible) return 0;
+        if (control == customExtensionRow) return custom.Checked ? (int)Math.Ceiling(34 * scale) : 0;
+        var flow = control as FlowLayoutPanel;
+        if (flow != null) {
+            // Measure the controls, never the old height of their container.
+            flow.AutoSize = false;
+            int used = flow.Padding.Left, rowHeight = 0, height = flow.Padding.Vertical;
+            int available = Math.Max(1, width - flow.Padding.Horizontal);
+            foreach (Control child in flow.Controls) {
+                Size size;
+                var input = child as TextBox;
+                if (input != null) size = new Size(input.Width, input.PreferredHeight);
+                else size = child.AutoSize ? child.GetPreferredSize(Size.Empty) : child.Size;
+                int outerWidth = size.Width + child.Margin.Horizontal;
+                if (flow.WrapContents && used > flow.Padding.Left && used - flow.Padding.Left + outerWidth > available) {
+                    height += rowHeight; used = flow.Padding.Left; rowHeight = 0;
+                }
+                used += outerWidth;
+                rowHeight = Math.Max(rowHeight, size.Height + child.Margin.Vertical);
+                if (flow.GetFlowBreak(child)) { height += rowHeight; used = flow.Padding.Left; rowHeight = 0; }
+            }
+            return height + rowHeight;
+        }
+        var label = control as Label;
+        if (label != null) {
+            if (label.MaximumSize.Width > 0) width = Math.Min(width, label.MaximumSize.Width);
+            return TextRenderer.MeasureText(label.Text, label.Font, new Size(Math.Max(1, width), Int32.MaxValue), TextFormatFlags.WordBreak | TextFormatFlags.NoPrefix | TextFormatFlags.TextBoxControl).Height + label.Padding.Vertical;
+        }
+        return control.GetPreferredSize(new Size(Math.Max(1, width), 0)).Height;
+    }
+    void SizeSettingsGroup(TableLayoutPanel group, float scale) {
+        int width = Math.Max(1, layout.ClientSize.Width - layout.Padding.Horizontal - group.Margin.Horizontal - group.Padding.Horizontal);
+        int height = group.Padding.Vertical;
+        foreach (Control child in group.Controls) {
+            int row = group.GetRow(child);
+            int contentHeight = ContentRowHeight(child, Math.Max(1, width - child.Margin.Horizontal), scale);
+            int rowHeight = contentHeight > 0 ? contentHeight + child.Margin.Vertical : 0;
+            group.RowStyles[row].SizeType = SizeType.Absolute;
+            group.RowStyles[row].Height = rowHeight;
+            height += rowHeight;
+        }
+        RowStyle outerRow = layout.RowStyles[layout.GetRow(group)];
+        outerRow.SizeType = SizeType.Absolute;
+        outerRow.Height = height + group.Margin.Vertical;
+    }
+    void RequestFit() {
+        if (fitQueued || fittingContent || !IsHandleCreated || IsDisposed) return;
+        fitQueued = true;
+        BeginInvoke(new Action(() => { fitQueued = false; if (!IsDisposed) FitToContent(); }));
+    }
+    protected override void WndProc(ref Message message) {
+        base.WndProc(ref message);
+        // Recheck after resolution, taskbar/work-area, or per-monitor DPI changes.
+        if (message.Msg == 0x007E || message.Msg == 0x001A || message.Msg == 0x02E0) {
+            ConstrainToScreen(); RequestFit();
+        }
+    }
+    public static Rectangle ScreenBounds(Rectangle desired, Rectangle workingArea) {
+        int width = Math.Min(Math.Max(1, desired.Width), workingArea.Width);
+        int height = Math.Min(Math.Max(1, desired.Height), workingArea.Height);
+        int left = Math.Max(workingArea.Left, Math.Min(desired.Left, workingArea.Right - width));
+        int top = Math.Max(workingArea.Top, Math.Min(desired.Top, workingArea.Bottom - height));
+        return new Rectangle(left, top, width, height);
+    }
+    public static Rectangle AvailableScreenArea(Rectangle workingArea, int dpi) {
+        int margin = Math.Min((int)Math.Round(16 * dpi / 96F), Math.Max(0, (workingArea.Height - 1) / 4));
+        return new Rectangle(workingArea.Left, workingArea.Top + margin, workingArea.Width, workingArea.Height - 2 * margin);
+    }
+    void ApplyScreenBounds(Rectangle desired) {
+        Rectangle workingArea = AvailableScreenArea(Screen.FromControl(this).WorkingArea, DeviceDpi);
+        Size minimum = new Size(Math.Min((int)Math.Round(570 * DeviceDpi / 96F), workingArea.Width), 0);
+        if (MinimumSize != minimum) MinimumSize = minimum;
+        if (MaximumSize != workingArea.Size) MaximumSize = workingArea.Size;
+        desired.Width = Math.Max(minimum.Width, desired.Width);
+        Rectangle fitted = ScreenBounds(desired, workingArea);
+        if (Bounds != fitted) SetBounds(fitted.X, fitted.Y, fitted.Width, fitted.Height, BoundsSpecified.All);
+    }
+    void ConstrainToScreen() {
+        if (fittingContent || !IsHandleCreated || IsDisposed || WindowState != FormWindowState.Normal) return;
+        fittingContent = true;
+        try { ApplyScreenBounds(Bounds); }
+        finally { fittingContent = false; }
+    }
     void FitToContent() {
-        if (fittingContent || !IsHandleCreated || IsDisposed) return;
+        if (fittingContent || !IsHandleCreated || IsDisposed || WindowState != FormWindowState.Normal) return;
         fittingContent = true;
         try {
+            ApplyScreenBounds(Bounds);
             float scale = DeviceDpi / 96F;
-            bool hasOutput = !String.IsNullOrWhiteSpace(details.Text);
-            details.Visible = hasOutput;
-            if (hasOutput) {
-                int textWidth = Math.Max(100, layout.ClientSize.Width - layout.Padding.Horizontal - details.Margin.Horizontal - SystemInformation.VerticalScrollBarWidth - (int)(12 * scale));
-                Size measured = TextRenderer.MeasureText(details.Text, details.Font, new Size(textWidth, Int32.MaxValue), TextFormatFlags.WordBreak | TextFormatFlags.TextBoxControl | TextFormatFlags.NoPrefix);
-                details.Height = Math.Min(measured.Height + (int)(12 * scale), (int)(220 * scale));
+            for (int pass = 0; pass < 2; pass++) {
+                int oldWidth = layout.ClientSize.Width;
+                SizeSettingsGroup(versionGroup, scale); SizeSettingsGroup(coopGroup, scale); SizeSettingsGroup(saveGroup, scale);
+                bool hasOutput = !String.IsNullOrWhiteSpace(details.Text);
+                details.Visible = hasOutput;
+                int outputHeight = 0;
+                if (hasOutput) {
+                    int textWidth = Math.Max(100, layout.ClientSize.Width - layout.Padding.Horizontal - details.Margin.Horizontal - SystemInformation.VerticalScrollBarWidth - (int)(12 * scale));
+                    Size measured = TextRenderer.MeasureText(details.Text, details.Font, new Size(textWidth, Int32.MaxValue), TextFormatFlags.WordBreak | TextFormatFlags.TextBoxControl | TextFormatFlags.NoPrefix);
+                    outputHeight = Math.Min(measured.Height + (int)(12 * scale), (int)(220 * scale));
+                }
+                RowStyle outputRow = layout.RowStyles[layout.GetRow(details)];
+                outputRow.SizeType = SizeType.Absolute; outputRow.Height = hasOutput ? outputHeight + details.Margin.Vertical : 0;
+                layout.AutoScrollMinSize = Size.Empty;
+                layout.PerformLayout();
+                int preferred = layout.Padding.Vertical;
+                foreach (RowStyle row in layout.RowStyles) preferred += (int)Math.Ceiling(row.Height);
+                int border = Height - ClientSize.Height;
+                ApplyScreenBounds(new Rectangle(Left, Top, Width, preferred + border));
+                layout.PerformLayout();
+                if (oldWidth == layout.ClientSize.Width) break;
             }
-            layout.PerformLayout();
-            int preferred = layout.GetPreferredSize(new Size(ClientSize.Width, 0)).Height;
-            int border = Height - ClientSize.Height;
-            int maximum = Math.Max(100, Screen.FromControl(this).WorkingArea.Height - border);
-            int height = Math.Min(preferred, maximum);
-            if (ClientSize.Height != height) ClientSize = new Size(ClientSize.Width, height);
         }
         finally { fittingContent = false; }
+    }
+    void PasswordKeyDown(object sender, KeyEventArgs e) {
+        if (!e.Control || e.Alt || e.KeyCode != Keys.Back) return;
+        // Standard TextBox otherwise inserts DEL (U+007F) for Ctrl+Backspace.
+        e.Handled = true; e.SuppressKeyPress = true;
+        if (password.SelectionLength > 0) { password.SelectedText = ""; return; }
+        int end = password.SelectionStart, start = end;
+        while (start > 0 && Char.IsWhiteSpace(password.Text[start - 1])) start--;
+        if (start > 0) {
+            bool word = Char.IsLetterOrDigit(password.Text[start - 1]) || password.Text[start - 1] == '_';
+            while (start > 0 && !Char.IsWhiteSpace(password.Text[start - 1]) &&
+                (Char.IsLetterOrDigit(password.Text[start - 1]) || password.Text[start - 1] == '_') == word) start--;
+        }
+        password.Select(start, end - start);
+        if (password.SelectionLength > 0) password.SelectedText = "";
     }
     void RefreshVersions() { if (onlineChecks && !versionWorker.IsBusy) versionWorker.RunWorkerAsync(); }
     void RefreshInstallation() {
@@ -243,12 +419,16 @@ public sealed class LauncherWindow : Form
         try { available = RepositoryUpdates.Distributable(newest) && RepositoryUpdates.Newer(RepositoryUpdates.InstalledVersion(repository), newest.Version); } catch { }
         update.Enabled = !worker.IsBusy && !SettingsSaving() && !saveFailed && available;
     }
+    string SaveMode() { return co2.Checked ? "co2" : custom.Checked ? "custom" : "sl2"; }
+    string SaveExtension() { return custom.Checked ? customExtension.Text : co2.Checked ? "co2" : "sl2"; }
     void UpdateSaveInfo() {
         password.Enabled = seamless.Checked && !worker.IsBusy;
-        string extension = seamless.Checked && File.Exists(iniPath) ? LauncherFiles.ReadValue(File.ReadAllText(iniPath), "SAVE", "save_file_extension", "co2") : "sl2";
-        saveInfo.Text = "Save: DRAKS0005." + extension + Environment.NewLine +
-            (extension.Equals("sl2", StringComparison.OrdinalIgnoreCase) ? "Matches Steam Cloud's file rules; sync must be enabled in Steam. This is the vanilla save filename." : "Outside Steam Cloud's sync rules (*.sl2).") +
-            (seamless.Checked ? " Keep co-op saves separate from vanilla." : " Co-op saves are separate and will not be loaded.");
+        customExtensionRow.Visible = custom.Checked;
+        customExtensionGroup.Visible = custom.Checked;
+        string extension = SaveExtension();
+        string remark = extension.Equals("sl2", StringComparison.OrdinalIgnoreCase) ? Sl2Remark : extension.Equals("co2", StringComparison.OrdinalIgnoreCase) ? Co2Remark : CustomRemark;
+        saveInfo.Text = "Save: DRAKS0005." + extension + Environment.NewLine + remark;
+        RequestFit();
     }
     bool SettingsSaving() { return saveWorker.IsBusy || saveTimer.Enabled || (!saveFailed && savedRevision != saveRevision); }
     bool SettingsReady() { return !SettingsSaving() && !saveFailed && savedRevision == saveRevision; }
@@ -256,12 +436,11 @@ public sealed class LauncherWindow : Form
     void QueueSave() {
         saveRevision++; saveFailed = false;
         saveTimer.Stop(); saveTimer.Start();
-        status.Text = "Saving settings...";
         UpdatePlayButton(); UpdateButton();
     }
     void StartSaving() {
         if (saveWorker.IsBusy || IsDisposed) return;
-        saving = new SettingsChange { Seamless = seamless.Checked, Password = password.Text, Revision = saveRevision };
+        saving = new SettingsChange { Seamless = seamless.Checked, Password = password.Text, SaveMode = SaveMode(), CustomExtension = customExtension.Text, Revision = saveRevision };
         try { saveWorker.RunWorkerAsync(saving); }
         catch (Exception ex) { saveFailed = true; closeAfterSave = false; ShowSaveError(ex); }
         UpdatePlayButton(); UpdateButton();
@@ -276,25 +455,60 @@ public sealed class LauncherWindow : Form
         if (e.Error != null) { saveFailed = true; closeAfterSave = false; ShowSaveError(e.Error); }
         else {
             savedRevision = saving.Revision; saveFailed = false;
-            if (!worker.IsBusy) status.Text = "Settings saved.";
+            string passwordNotice = BulletOutput((showInstallSuccess ? InstallSuccess + Environment.NewLine : "") + PasswordPrompt);
+            if (details.Text.Replace("\r", "") == passwordNotice.Replace("\r", "")) details.Text = showInstallSuccess ? BulletOutput(InstallSuccess) : "";
+            SetSaveFeedback("\u2705 Settings saved");
         }
         UpdatePlayButton(); UpdateButton();
         if (closeAfterSave && SettingsReady()) { closeAfterSave = false; Close(); }
     }
-    void ShowSaveError(Exception ex) {
-        status.Text = "Could not save settings. Change a setting to retry. " + ex.Message;
-        details.Text = BulletOutput(ex.ToString()); UpdatePlayButton(); UpdateButton();
+    void SetSaveFeedback(string message) {
+        var lines = new System.Collections.Generic.List<string>();
+        foreach (string line in details.Text.Replace("\r", "").Split('\n')) {
+            string content = line.Trim().TrimStart('\u2022', ' ');
+            if (content.Length == 0 || content.StartsWith("\u2705 Settings saved") || content.StartsWith("\u26A0\uFE0F Could not save settings.")) continue;
+            lines.Add(line);
+        }
+        lines.Add(message);
+        details.Text = String.Join(Environment.NewLine, lines);
     }
-    void PersistSettings(bool enabled, string selectedPassword) {
-        if (enabled && String.IsNullOrWhiteSpace(selectedPassword)) throw new InvalidOperationException("Enter a co-op password. Everyone in your party must use the same password.");
+    void ColorOutput() {
+        details.SelectAll(); details.SelectionColor = SystemColors.WindowText;
+        int offset = 0;
+        foreach (string line in details.Lines) {
+            string content = line.TrimStart('\u2022', ' ');
+            int symbol = offset + line.Length - content.Length;
+            if (content.StartsWith("\u2705")) {
+                details.Select(symbol, 1); details.SelectionColor = Color.ForestGreen;
+            }
+            else if (content.StartsWith("\u26A0")) {
+                details.Select(symbol, content.StartsWith("\u26A0\uFE0F") ? 2 : 1); details.SelectionColor = Color.DarkGoldenrod;
+            }
+            offset += line.Length + 1;
+        }
+        details.Select(0, 0);
+    }
+    void ShowSaveError(Exception ex) {
+        if (ex is InvalidOperationException && ex.Message == PasswordPrompt) {
+            details.Text = BulletOutput((showInstallSuccess ? InstallSuccess + Environment.NewLine : "") + PasswordPrompt);
+        }
+        else {
+            SetSaveFeedback("\u26A0\uFE0F Could not save settings. Change a setting to retry. " + ex.Message);
+        }
+        UpdatePlayButton(); UpdateButton();
+    }
+    void PersistSettings(bool enabled, string selectedPassword, string mode, string customValue) {
+        string extension = mode == "custom" ? customValue : mode;
+        if (!Regex.IsMatch(extension ?? "", "^[a-zA-Z0-9]{1,120}$")) throw new InvalidOperationException("Enter a save extension using 1 to 120 letters or numbers after the dot.");
+        if (enabled && String.IsNullOrWhiteSpace(selectedPassword)) throw new InvalidOperationException(PasswordPrompt);
         if (enabled && !Installed()) throw new IOException("The Seamless Co-op installation is incomplete.");
         if (Installed()) {
-            string original = File.ReadAllText(iniPath), updated = LauncherFiles.SetPassword(original, selectedPassword);
+            string original = File.ReadAllText(iniPath), updated = LauncherFiles.SetSaveExtension(LauncherFiles.SetPassword(original, selectedPassword), extension);
             if (updated != original) LauncherFiles.Write(iniPath, updated);
         }
         var serializer = new XmlSerializer(typeof(LauncherSettings));
         using (var writer = new StringWriter()) {
-            serializer.Serialize(writer, new LauncherSettings { Seamless = enabled });
+            serializer.Serialize(writer, new LauncherSettings { Seamless = enabled, SaveMode = mode, CustomSaveExtension = customValue });
             LauncherFiles.Write(settingsPath, writer.ToString().Replace("encoding=\"utf-16\"", "encoding=\"utf-8\""));
         }
     }
@@ -307,6 +521,7 @@ public sealed class LauncherWindow : Form
         check.Enabled = downloadCoop.Enabled = !busy;
         UpdatePlayButton();
         seamless.Enabled = !busy && Installed(); password.Enabled = !busy && seamless.Checked;
+        sl2.Enabled = co2.Enabled = custom.Enabled = customExtension.Enabled = !busy;
         UseWaitCursor = busy; UpdateButton();
     }
     void Run(bool validateOnly) {
@@ -327,6 +542,7 @@ public sealed class LauncherWindow : Form
         if (worker.IsBusy) return;
         try {
             if (action == "update" && !SettingsReady()) return;
+            showInstallSuccess = false;
             details.Clear();
             status.Text = action == "install" ? "Validating and installing Seamless Co-op..." : action == "setup" ? "Verifying setup and repairing mod files..." : "Downloading and verifying update...";
             worker.RunWorkerAsync(new string[] { action, archive }); SetBusy(true);
@@ -400,9 +616,13 @@ public sealed class LauncherWindow : Form
             }
             details.Text = BulletOutput(action[1]);
             if (action[0] == "setup") { status.Text = action[2] == "Passed" ? "Setup verified. See details below." : "Setup verification needs attention. See details below."; return; }
+            showInstallSuccess = true;
             RefreshInstallation();
             if (!wasInstalled) { password.Text = LauncherFiles.ReadValue(File.ReadAllText(iniPath), "PASSWORD", "cooppassword", ""); seamless.Checked = true; }
-            UpdateSaveInfo(); status.Text = "Installation complete. Set your shared password, then click Play.";
+            UpdateSaveInfo();
+            bool needsPassword = seamless.Checked && String.IsNullOrWhiteSpace(password.Text);
+            details.Text = BulletOutput(InstallSuccess + (needsPassword ? Environment.NewLine + PasswordPrompt : ""));
+            status.Text = needsPassword ? PasswordPrompt : InstallSuccess;
             return;
         }
         var result = (Tuple<int, string>)e.Result;
@@ -416,7 +636,8 @@ public sealed class UpdateWindow : Form
 {
     public UpdateWindow(string job, int parentId) {
         Text = "Q Souls 1 Update";
-        StartPosition = FormStartPosition.CenterScreen; ClientSize = new Size(420, 100);
+        StartPosition = FormStartPosition.CenterScreen;
+        MaximizeBox = false; ClientSize = new Size(420, 100);
         AutoScaleDimensions = new SizeF(96, 96); AutoScaleMode = AutoScaleMode.Dpi;
         using (var stream = typeof(LauncherWindow).Assembly.GetManifestResourceStream("QS1.ico"))
         using (var icon = new Icon(stream)) Icon = (Icon)icon.Clone();

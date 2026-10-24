@@ -1,4 +1,4 @@
-param([switch]$CheckOnly, [ValidateSet('Auto', 'Enabled', 'Disabled')][string]$CoopMode = 'Auto')
+param([switch]$CheckOnly, [ValidateSet('Auto', 'Enabled', 'Disabled')][string]$CoopMode = 'Auto', [ValidatePattern('^[a-zA-Z0-9]{1,120}$')][string]$SaveExtension)
 
 $ErrorActionPreference = 'Stop'
 
@@ -64,13 +64,25 @@ try {
     }
     else { Write-Host 'Mode: Q-Souls-1' }
     . (Join-Path $PSScriptRoot 'Read-SavedAudioLevels.ps1')
-    $saveExtension = 'sl2'
+    if (-not $SaveExtension) {
+        $SaveExtension = 'sl2'
+        $settingsPath = Join-Path $repository '.local\launcher.xml'
+        if (Test-Path -LiteralPath $settingsPath -PathType Leaf) {
+            [xml]$settings = Get-Content -LiteralPath $settingsPath -Raw
+            if ($settings.LauncherSettings.SaveMode -eq 'co2') { $SaveExtension = 'co2' }
+            elseif ($settings.LauncherSettings.SaveMode -eq 'custom') { $SaveExtension = [string]$settings.LauncherSettings.CustomSaveExtension }
+        }
+    }
+    if ($SaveExtension -notmatch '^[a-zA-Z0-9]{1,120}$') { throw 'Enter a save extension using 1 to 120 letters or numbers after the dot.' }
     if ($useSeamless) {
         $ini = Get-Content -LiteralPath (Join-Path $optionalRoot 'SeamlessCoop\ds1sc_settings.ini') -Raw
-        $extensionMatch = [regex]::Match($ini, '(?im)^\s*save_file_extension\s*=\s*([a-z0-9]{1,120})\s*$')
-        if (-not $extensionMatch.Success) { throw 'Invalid or missing Seamless save_file_extension setting.' }
-        $saveExtension = $extensionMatch.Groups[1].Value
+        $extensionMatch = [regex]::Match($ini, '(?im)^[ \t]*save_file_extension[ \t]*=[ \t]*([a-z0-9]{1,120})[ \t]*\r?$')
+        if (-not $extensionMatch.Success -or $extensionMatch.Groups[1].Value -cne $SaveExtension) {
+            if ($CheckOnly) { Write-Host "Seamless save extension needs to be saved as .$SaveExtension in the launcher." }
+            else { throw 'Save the selected extension in the launcher before playing.' }
+        }
     }
+    Write-Host "Save file: DRAKS0005.$SaveExtension"
     $savedAudio = Get-ProfileAudioLevels -Seamless $useSeamless -SaveExtension $saveExtension
     Write-Host ("Saved music level: {0}/10" -f $savedAudio[0])
     foreach ($required in @($runtime, (Join-Path $repository 'VERSION.txt'), (Join-Path $repository 'assets\audio\title-theme.wav'))) {
@@ -98,10 +110,14 @@ try {
     $previousAppId = $env:SteamAppId
     $previousGameId = $env:SteamGameId
     $previousAudio = $env:QSOULS_SAVED_AUDIO
+    $previousExtension = $env:QSOULS_SAVE_EXTENSION
+    $previousSaveRoot = $env:QSOULS_SAVE_ROOT
     try {
         $env:SteamAppId = '570940'
         $env:SteamGameId = '570940'
         $env:QSOULS_SAVED_AUDIO = $savedAudio -join ','
+        $env:QSOULS_SAVE_EXTENSION = if ($useSeamless) { 'sl2' } else { $SaveExtension }
+        $env:QSOULS_SAVE_ROOT = Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'NBGI\DARK SOULS REMASTERED'
         $gameId = [ExternalModLauncher]::Launch((Join-Path $gamePath 'DarkSoulsRemastered.exe'), $runtimeRoot, [string[]]$dlls)
         Write-Host "Mod loaded. Game process: $gameId"
     }
@@ -109,6 +125,8 @@ try {
         $env:SteamAppId = $previousAppId
         $env:SteamGameId = $previousGameId
         $env:QSOULS_SAVED_AUDIO = $previousAudio
+        $env:QSOULS_SAVE_EXTENSION = $previousExtension
+        $env:QSOULS_SAVE_ROOT = $previousSaveRoot
     }
     exit 0
 }

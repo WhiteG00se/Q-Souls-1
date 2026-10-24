@@ -21,7 +21,7 @@ $ini = "; preserve comments`r`n[PASSWORD]`r`ncooppassword = initial`r`n[SAVE]`r`
 [IO.File]::WriteAllText((Join-Path $temporary 'SeamlessCoop_here\SeamlessCoop\locale\english.json'), '{}')
 $form = New-Object LauncherWindow($temporary, $false)
 try {
-    $form.ShowInTaskbar = $false; $form.StartPosition = [Windows.Forms.FormStartPosition]::Manual
+    $form.Opacity = 0; $form.ShowInTaskbar = $false; $form.StartPosition = [Windows.Forms.FormStartPosition]::Manual
     $form.Location = New-Object Drawing.Point(-32000, -32000); $form.Show(); [Windows.Forms.Application]::DoEvents()
     $play = Field $form 'play'; $password = Field $form 'password'; $coop = Field $form 'seamless'
     Assert (-not $play.Enabled) 'Play enabled while startup settings were pending.'
@@ -43,7 +43,8 @@ try {
         $password.Text = 'blocked save'
         Wait-Save $form $true
         Assert (-not $play.Enabled) 'Play enabled after a failed save.'
-        Assert ((Field $form 'status').Text.StartsWith('Could not save settings.')) 'Save failure not shown.'
+        Assert ((Field $form 'details').Text.Contains('Could not save settings.')) 'Save failure not shown in output.'
+        Assert (-not (Field $form 'status').Text.Contains('Could not save settings.')) 'Save failure leaked into status label.'
     } finally { $lock.Dispose() }
     Assert (-not $play.Enabled) 'Releasing the lock bypassed the failed-save state.'
     $password.Text = 'retry save'

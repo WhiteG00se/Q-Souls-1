@@ -20,6 +20,12 @@ New-Item -ItemType Directory -Path $parameterDirectory -Force | Out-Null
 [IO.File]::WriteAllBytes((Join-Path $parameterDirectory 'GameParam.parambnd.dcx'), [Text.Encoding]::ASCII.GetBytes('TEST'))
 & (Join-Path $temporary 'Test-ParamOverride.exe') (Join-Path $game 'DarkSoulsRemastered.exe') $parameterFixture
 if ($LASTEXITCODE -ne 0) { throw 'Parameter redirection tests failed.' }
+& $Compiler @common (Join-Path $PSScriptRoot 'Test-SaveExtension.c') -municode -o (Join-Path $temporary 'Test-SaveExtension.exe')
+if ($LASTEXITCODE -ne 0) { throw 'Save extension test build failed.' }
+$saveFixture = Join-Path $temporary ('save-fixture-' + [Guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $saveFixture -Force | Out-Null
+& (Join-Path $temporary 'Test-SaveExtension.exe') (Join-Path $game 'DarkSoulsRemastered.exe') $saveFixture
+if ($LASTEXITCODE -ne 0) { throw 'Save extension tests failed.' }
 & $Compiler @common (Join-Path $PSScriptRoot 'Test-IntroSkip.c') -municode -o (Join-Path $temporary 'Test-IntroSkip.exe')
 if ($LASTEXITCODE -ne 0) { throw 'Intro-skip test build failed.' }
 & (Join-Path $temporary 'Test-IntroSkip.exe') (Join-Path $game 'DarkSoulsRemastered.exe')

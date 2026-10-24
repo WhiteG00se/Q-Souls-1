@@ -601,6 +601,7 @@ static BOOL replaceImport(void **slot, void *replacement)
 }
 
 #include "ParamOverride.h"
+#include "SaveExtension.h"
 
 // Explicit initialization lets the launcher report a failure before starting the game.
 __declspec(dllexport) DWORD WINAPI InitializeQSouls(void *unused)
@@ -620,6 +621,8 @@ __declspec(dllexport) DWORD WINAPI InitializeQSouls(void *unused)
         return ERROR_BUFFER_OVERFLOW;
     DWORD parameterError = initializeParamOverride(root);
     if (parameterError) return parameterError;
+    DWORD saveError = initializeSaveExtension();
+    if (saveError) return saveError;
     readStartupAudio();
     cameraGlobal = findCameraGlobal();
     optionsGlobal = findOptionsGlobal();
