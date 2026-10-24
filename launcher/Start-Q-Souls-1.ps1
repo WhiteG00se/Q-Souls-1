@@ -1,4 +1,4 @@
-param([switch]$CheckOnly)
+param([switch]$CheckOnly, [ValidateSet('Auto', 'Enabled', 'Disabled')][string]$CoopMode = 'Auto')
 
 $ErrorActionPreference = 'Stop'
 
@@ -37,25 +37,23 @@ try {
     if (-not $gamePath) {
         throw 'Dark Souls Remastered was not found in Steam installation records. Install it through Steam or provide its correct path.'
     }
-    if (-not (Get-Process -Name steam -ErrorAction SilentlyContinue)) {
-        throw 'Start Steam and sign in, then run this launcher again.'
-    }
-
     Write-Host "Steam: $steamPath"
     Write-Host "Game:  $gamePath"
-    if (Get-Process -Name DarkSoulsRemastered -ErrorAction SilentlyContinue) {
+    if (-not (Get-Process -Name steam -ErrorAction SilentlyContinue)) {
+        if ($CheckOnly) { Write-Host 'Steam is not running; start it and sign in before playing.' }
+        else { throw 'Start Steam and sign in, then run this launcher again.' }
+    }
+    if (-not $CheckOnly -and (Get-Process -Name DarkSoulsRemastered -ErrorAction SilentlyContinue)) {
         throw 'Close Dark Souls Remastered before using this launcher.'
     }
     $repository = Split-Path -Parent $PSScriptRoot
     $runtime = Join-Path $repository 'runtime\QSoulsRuntime.dll'
-    foreach ($required in @($runtime, (Join-Path $repository 'VERSION.txt'), (Join-Path $repository 'assets\audio\title-theme.wav'))) {
-        if (-not (Test-Path -LiteralPath $required -PathType Leaf)) { throw "Missing required mod file: $required" }
-    }
     $dlls = @($runtime)
     $optionalRoot = Join-Path $repository 'SeamlessCoop_here'
     $packageFiles = @(Get-ChildItem -LiteralPath $optionalRoot -Force -ErrorAction SilentlyContinue |
         Where-Object { $_.Name -ne '.gitkeep' })
-    if ($packageFiles.Count -gt 0) {
+    $useSeamless = $CoopMode -eq 'Enabled' -or ($CoopMode -eq 'Auto' -and $packageFiles.Count -gt 0)
+    if ($useSeamless) {
         foreach ($required in @('SeamlessCoop\ds1sc.dll', 'SeamlessCoop\ds1sc_settings.ini', 'SeamlessCoop\locale\english.json')) {
             if (-not (Test-Path -LiteralPath (Join-Path $optionalRoot $required) -PathType Leaf)) {
                 throw "Incomplete Seamless Co-op package: missing $required. Extract the entire Nexus download into SeamlessCoop_here."
@@ -66,8 +64,18 @@ try {
     }
     else { Write-Host 'Mode: Q-Souls-1' }
     . (Join-Path $PSScriptRoot 'Read-SavedAudioLevels.ps1')
-    $savedAudio = Get-ProfileAudioLevels -Seamless ($packageFiles.Count -gt 0)
+    $saveExtension = 'sl2'
+    if ($useSeamless) {
+        $ini = Get-Content -LiteralPath (Join-Path $optionalRoot 'SeamlessCoop\ds1sc_settings.ini') -Raw
+        $extensionMatch = [regex]::Match($ini, '(?im)^\s*save_file_extension\s*=\s*([a-z0-9]{1,120})\s*$')
+        if (-not $extensionMatch.Success) { throw 'Invalid or missing Seamless save_file_extension setting.' }
+        $saveExtension = $extensionMatch.Groups[1].Value
+    }
+    $savedAudio = Get-ProfileAudioLevels -Seamless $useSeamless -SaveExtension $saveExtension
     Write-Host ("Saved music level: {0}/10" -f $savedAudio[0])
+    foreach ($required in @($runtime, (Join-Path $repository 'VERSION.txt'), (Join-Path $repository 'assets\audio\title-theme.wav'))) {
+        if (-not (Test-Path -LiteralPath $required -PathType Leaf)) { throw "Missing required mod file: $required" }
+    }
     Add-Type -Path (Join-Path $PSScriptRoot 'ExternalModLauncher.cs')
     # Keep generated parameters external; other assets are read through junctions.
     $runtimeRoot = Join-Path $repository '.local\game'

@@ -1,0 +1,466 @@
+using System;
+using System.ComponentModel;
+using System.Diagnostics;
+using System.Drawing;
+using System.IO;
+using System.Text.RegularExpressions;
+using System.Windows.Forms;
+using System.Xml.Serialization;
+
+[assembly: System.Runtime.Versioning.TargetFramework(".NETFramework,Version=v4.8", FrameworkDisplayName = ".NET Framework 4.8")]
+
+public class LauncherSettings { public bool Seamless = true; }
+
+public static class LauncherFiles
+{
+    public static string ReadValue(string text, string section, string key, string fallback)
+    {
+        Match block = Regex.Match(text, @"(?ims)^\s*\[" + Regex.Escape(section) + @"\][^\r\n]*\r?\n(?<body>.*?)(?=^\s*\[|\z)");
+        Match value = Regex.Match(block.Groups["body"].Value, @"(?im)^[ \t]*" + Regex.Escape(key) + @"[ \t]*=[ \t]*([^\r\n]*)");
+        return value.Success ? value.Groups[1].Value.Trim() : fallback;
+    }
+    public static string SetPassword(string text, string password)
+    {
+        if (password.IndexOfAny(new char[] { '\r', '\n', '\0' }) >= 0)
+            throw new InvalidOperationException("The password must be a single line.");
+        Match section = Regex.Match(text, @"(?ims)^\s*\[PASSWORD\][^\r\n]*\r?\n(?<body>.*?)(?=^\s*\[|\z)");
+        if (!section.Success) throw new InvalidOperationException("The Seamless settings are missing [PASSWORD].");
+        Group body = section.Groups["body"];
+        if (!Regex.IsMatch(body.Value, @"(?im)^\s*cooppassword\s*="))
+            throw new InvalidOperationException("The Seamless settings are missing cooppassword.");
+        string updated = Regex.Replace(body.Value, @"(?im)^([ \t]*cooppassword[ \t]*=[ \t]*)[^\r\n]*", m => m.Groups[1].Value + password);
+        return text.Substring(0, body.Index) + updated + text.Substring(body.Index + body.Length);
+    }
+    public static void RequireRealDirectory(string path)
+    {
+        for (string item = Path.GetFullPath(path); item != null; item = Path.GetDirectoryName(item))
+            if (Directory.Exists(item) && (File.GetAttributes(item) & FileAttributes.ReparsePoint) != 0)
+                throw new IOException("Settings cannot be written through a directory link: " + item);
+    }
+    public static void Write(string path, string text)
+    {
+        RequireRealDirectory(Path.GetDirectoryName(path));
+        if (File.Exists(path) && (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
+            throw new IOException("Settings cannot be written through a file link.");
+        Directory.CreateDirectory(Path.GetDirectoryName(path));
+        string temporary = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        try {
+            File.WriteAllText(temporary, text, new System.Text.UTF8Encoding(false));
+            if (File.Exists(path)) File.Replace(temporary, path, null);
+            else File.Move(temporary, path);
+        }
+        finally { if (File.Exists(temporary)) File.Delete(temporary); }
+    }
+}
+
+public sealed class LauncherWindow : Form
+{
+    readonly string repository, settingsPath, iniPath;
+    readonly CheckBox seamless = new CheckBox();
+    readonly TextBox password = new TextBox();
+    readonly Label saveInfo = new Label(), status = new Label();
+    readonly Label installedSouls = new Label(), newestSouls = new Label(), installedCoop = new Label(), newestCoop = new Label(), zipHint = new Label();
+    readonly Button play = new Button(), check = new Button();
+    readonly Button downloadCoop = new Button(), update = new Button();
+    readonly TextBox details = new TextBox();
+    readonly TableLayoutPanel layout;
+    bool fittingContent;
+    readonly BackgroundWorker worker = new BackgroundWorker(), versionWorker = new BackgroundWorker();
+    readonly BackgroundWorker saveWorker = new BackgroundWorker();
+    readonly System.Windows.Forms.Timer saveTimer = new System.Windows.Forms.Timer { Interval = 250 };
+    sealed class SettingsChange { public bool Seamless; public string Password; public int Revision; }
+    SettingsChange saving;
+    int saveRevision, savedRevision;
+    bool saveFailed, closeAfterSave;
+    readonly Font boldVersionFont;
+    PublishedVersion newest;
+    bool checking, wasInstalled, restarting;
+    readonly bool onlineChecks;
+
+    public LauncherWindow(string root) : this(root, true) { }
+    public LauncherWindow(string root, bool checkVersions)
+    {
+        SuspendLayout();
+        repository = root; onlineChecks = checkVersions;
+        settingsPath = Path.Combine(root, ".local", "launcher.xml");
+        iniPath = Path.Combine(root, "SeamlessCoop_here", "SeamlessCoop", "ds1sc_settings.ini");
+        Text = "Q Souls 1 Launcher";
+        using (var stream = typeof(LauncherWindow).Assembly.GetManifestResourceStream("QS1.ico"))
+        using (var icon = new Icon(stream)) Icon = (Icon)icon.Clone();
+        StartPosition = FormStartPosition.CenterScreen;
+        ClientSize = new Size(610, 400); MinimumSize = new Size(570, 0);
+        AutoScaleDimensions = new SizeF(96F, 96F); AutoScaleMode = AutoScaleMode.Dpi;
+        Font = new Font("Segoe UI", 10);
+        boldVersionFont = new Font(Font, FontStyle.Bold);
+        layout = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(20), ColumnCount = 1, AutoScroll = true };
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100)); Controls.Add(layout);
+        string version = File.Exists(Path.Combine(root, "VERSION.txt")) ? File.ReadAllText(Path.Combine(root, "VERSION.txt")).Trim() : "Unknown";
+        installedSouls.Text = "Installed Q Souls 1 Version: v" + version; installedSouls.AutoSize = true; layout.Controls.Add(installedSouls);
+        newestSouls.Text = "Newest Q Souls 1 Version: Checking..."; newestSouls.AutoSize = true; layout.Controls.Add(newestSouls);
+        var updateRow = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill };
+        update.Text = "Update to Q Souls 1"; update.AutoSize = true; update.Enabled = false;
+        update.Click += delegate { BeginOperation("update"); };
+        updateRow.Controls.Add(update); layout.Controls.Add(updateRow);
+        seamless.Text = "Enable Seamless Co-op"; seamless.AutoSize = true; layout.Controls.Add(seamless);
+        installedCoop.AutoSize = true; layout.Controls.Add(installedCoop);
+        newestCoop.Text = "Newest Seamless Co-op Version: Checking..."; newestCoop.AutoSize = true; layout.Controls.Add(newestCoop);
+        downloadCoop.Text = "Open Seamless Co-op Download Page"; downloadCoop.AutoSize = true;
+        downloadCoop.Click += delegate {
+            zipHint.Visible = true;
+            try { Process.Start(new ProcessStartInfo("https://www.nexusmods.com/darksoulsremastered/mods/899?tab=files") { UseShellExecute = true }); }
+            catch (Exception ex) { ShowError(ex); }
+        };
+        layout.Controls.Add(downloadCoop);
+        zipHint.Text = "Drag the downloaded ZIP file onto this window to install Seamless Co-op.";
+        zipHint.AutoSize = true; zipHint.MaximumSize = new Size(550, 0); zipHint.Visible = false; layout.Controls.Add(zipHint);
+        AllowDrop = true;
+        DragEnter += delegate(object sender, DragEventArgs e) {
+            var files = e.Data.GetData(DataFormats.FileDrop) as string[];
+            e.Effect = !worker.IsBusy && files != null && files.Length == 1 && files[0].EndsWith(".zip", StringComparison.OrdinalIgnoreCase) ? DragDropEffects.Copy : DragDropEffects.None;
+        };
+        DragDrop += delegate(object sender, DragEventArgs e) {
+            var files = e.Data.GetData(DataFormats.FileDrop) as string[];
+            if (files != null && files.Length == 1) InstallArchive(files[0]);
+        };
+        var passwordRow = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill };
+        passwordRow.Controls.Add(new Label { Text = "Co-op password:", AutoSize = true, Margin = new Padding(0, 6, 12, 0) });
+        password.Width = 230; password.UseSystemPasswordChar = false; passwordRow.Controls.Add(password);
+        layout.Controls.Add(passwordRow);
+        saveInfo.AutoSize = true; saveInfo.MaximumSize = new Size(550, 0); layout.Controls.Add(saveInfo);
+        var openSaves = new Button { Text = "Open savefile folder", AutoSize = true };
+        openSaves.Click += delegate {
+            try {
+                string path = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "NBGI", "DARK SOULS REMASTERED");
+                if (!Directory.Exists(path)) throw new IOException("No save folder found. Create a character first.");
+                Process.Start(new ProcessStartInfo("explorer.exe", "\"" + path + "\"") { UseShellExecute = true });
+            } catch (Exception ex) { ShowError(ex); }
+        };
+        var actions = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill };
+        play.Text = "Play"; check.Text = "Verify setup";
+        foreach (Button button in new[] { play, openSaves, check }) { button.AutoSize = true; actions.Controls.Add(button); }
+        layout.Controls.Add(actions);
+        status.AutoSize = true; status.MaximumSize = new Size(550, 0); status.Text = "Ready. Keep Steam running and signed in."; layout.Controls.Add(status);
+        details.Multiline = true; details.ReadOnly = true; details.ScrollBars = ScrollBars.Vertical;
+        details.AutoSize = false; details.Dock = DockStyle.Fill; details.MinimumSize = new Size(100, 0); layout.Controls.Add(details);
+        layout.RowStyles.Clear();
+        layout.RowCount = layout.Controls.Count;
+        for (int i = 0; i < layout.Controls.Count; i++) layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        details.TextChanged += delegate { FitToContent(); };
+        layout.Layout += delegate { FitToContent(); };
+        ClientSizeChanged += delegate { FitToContent(); };
+        DpiChanged += delegate { FitToContent(); };
+        play.Click += delegate { Run(false); }; check.Click += delegate { if (SettingsReady()) { RefreshVersions(); BeginOperation("setup", seamless.Checked ? "Enabled" : "Disabled"); } };
+        seamless.CheckedChanged += delegate { UpdateSaveInfo(); };
+        FormClosing += delegate(object sender, FormClosingEventArgs e) {
+            if (worker.IsBusy && !restarting) { e.Cancel = true; status.Text = "Please wait for the current operation to finish."; return; }
+            if (SettingsSaving()) { e.Cancel = true; closeAfterSave = true; status.Text = "Saving settings before closing..."; }
+        };
+        worker.DoWork += RunBackend;
+        worker.RunWorkerCompleted += OperationCompleted;
+        versionWorker.DoWork += delegate(object sender, DoWorkEventArgs e) { e.Result = RepositoryUpdates.CheckVersions(); };
+        versionWorker.RunWorkerCompleted += delegate(object sender, RunWorkerCompletedEventArgs e) {
+            if (IsDisposed) return;
+            if (e.Error != null) { newestSouls.Text = "Newest Q Souls 1 Version: Unavailable"; newestCoop.Text = "Newest Seamless Co-op Version: Unavailable"; UpdateVersionStyles(); return; }
+            var result = (VersionCheck)e.Result;
+            newest = result.Souls;
+            newestSouls.Text = "Newest Q Souls 1 Version: " + (newest == null ? "Unavailable" : "v" + newest.Version);
+            newestCoop.Text = "Newest Seamless Co-op Version: " + (result.CoopVersion == null ? "Unavailable" : "v" + result.CoopVersion);
+            UpdateVersionStyles();
+            update.Text = newest == null ? "Update to Q Souls 1" : "Update to Q Souls 1 v" + newest.Version;
+            UpdateButton();
+            if (!worker.IsBusy && details.Text.Length == 0 && newest != null && !RepositoryUpdates.Distributable(newest)) details.Text = BulletOutput("The GitHub snapshot does not include the prebuilt GUI launcher yet. Publish the .exe and its .config with the repository to enable automatic updates.");
+            if (!worker.IsBusy && details.Text.Length == 0 && (result.SoulsError != null || result.CoopError != null)) details.Text = BulletOutput("Version lookup: " + result.SoulsError + Environment.NewLine + result.CoopError + Environment.NewLine + "The launcher can still be used offline.");
+        };
+        string previousReport = Path.Combine(root, ".local", "setup-report.txt");
+        if (File.Exists(previousReport)) details.Text = BulletOutput(File.ReadAllText(previousReport));
+        RefreshInstallation();
+        var settings = new LauncherSettings();
+        if (File.Exists(settingsPath)) using (var reader = File.OpenRead(settingsPath)) settings = (LauncherSettings)new XmlSerializer(typeof(LauncherSettings)).Deserialize(reader);
+        seamless.Checked = settings.Seamless && Installed();
+        if (File.Exists(iniPath)) password.Text = LauncherFiles.ReadValue(File.ReadAllText(iniPath), "PASSWORD", "cooppassword", "");
+        saveTimer.Tick += delegate { saveTimer.Stop(); StartSaving(); };
+        saveWorker.DoWork += delegate(object sender, DoWorkEventArgs e) {
+            var change = (SettingsChange)e.Argument;
+            PersistSettings(change.Seamless, change.Password);
+        };
+        saveWorker.RunWorkerCompleted += SaveCompleted;
+        seamless.CheckedChanged += delegate { QueueSave(); };
+        password.TextChanged += delegate { QueueSave(); };
+        QueueSave();
+        UpdateSaveInfo(); ResumeLayout(true);
+        Shown += delegate { FitToContent(); if (onlineChecks) RefreshVersions(); };
+    }
+    void FitToContent() {
+        if (fittingContent || !IsHandleCreated || IsDisposed) return;
+        fittingContent = true;
+        try {
+            float scale = DeviceDpi / 96F;
+            bool hasOutput = !String.IsNullOrWhiteSpace(details.Text);
+            details.Visible = hasOutput;
+            if (hasOutput) {
+                int textWidth = Math.Max(100, layout.ClientSize.Width - layout.Padding.Horizontal - details.Margin.Horizontal - SystemInformation.VerticalScrollBarWidth - (int)(12 * scale));
+                Size measured = TextRenderer.MeasureText(details.Text, details.Font, new Size(textWidth, Int32.MaxValue), TextFormatFlags.WordBreak | TextFormatFlags.TextBoxControl | TextFormatFlags.NoPrefix);
+                details.Height = Math.Min(measured.Height + (int)(12 * scale), (int)(220 * scale));
+            }
+            layout.PerformLayout();
+            int preferred = layout.GetPreferredSize(new Size(ClientSize.Width, 0)).Height;
+            int border = Height - ClientSize.Height;
+            int maximum = Math.Max(100, Screen.FromControl(this).WorkingArea.Height - border);
+            int height = Math.Min(preferred, maximum);
+            if (ClientSize.Height != height) ClientSize = new Size(ClientSize.Width, height);
+        }
+        finally { fittingContent = false; }
+    }
+    void RefreshVersions() { if (onlineChecks && !versionWorker.IsBusy) versionWorker.RunWorkerAsync(); }
+    void RefreshInstallation() {
+        bool installed = Installed();
+        seamless.Enabled = installed && !worker.IsBusy;
+        try { installedCoop.Text = "Installed Seamless Co-op Version: " + (installed ? RepositoryUpdates.CoopInstalled(repository) : "not installed"); }
+        catch { installedCoop.Text = "Installed Seamless Co-op Version: Unknown (installed)"; }
+        UpdateVersionStyles();
+    }
+    void UpdateVersionStyles() {
+        StyleVersionPair(installedSouls, newestSouls);
+        StyleVersionPair(installedCoop, newestCoop);
+    }
+    void StyleVersionPair(Label local, Label remote) {
+        bool different = false;
+        Match first = Regex.Match(local.Text, @": v(\d+\.\d+(?:\.\d+){0,2})$");
+        Match second = Regex.Match(remote.Text, @": v(\d+\.\d+(?:\.\d+){0,2})$");
+        if (first.Success && second.Success) {
+            try { different = RepositoryUpdates.ParseVersion(first.Groups[1].Value) != RepositoryUpdates.ParseVersion(second.Groups[1].Value); }
+            catch { }
+        }
+        local.Font = remote.Font = different ? boldVersionFont : Font;
+    }
+    bool Installed() {
+        foreach (string relative in new[] { "ds1sc.dll", "ds1sc_settings.ini", "locale\\english.json" })
+            if (!File.Exists(Path.Combine(repository, "SeamlessCoop_here", "SeamlessCoop", relative))) return false;
+        return true;
+    }
+    void UpdateButton() {
+        bool available = false;
+        try { available = RepositoryUpdates.Distributable(newest) && RepositoryUpdates.Newer(RepositoryUpdates.InstalledVersion(repository), newest.Version); } catch { }
+        update.Enabled = !worker.IsBusy && !SettingsSaving() && !saveFailed && available;
+    }
+    void UpdateSaveInfo() {
+        password.Enabled = seamless.Checked && !worker.IsBusy;
+        string extension = seamless.Checked && File.Exists(iniPath) ? LauncherFiles.ReadValue(File.ReadAllText(iniPath), "SAVE", "save_file_extension", "co2") : "sl2";
+        saveInfo.Text = "Save: DRAKS0005." + extension + Environment.NewLine +
+            (extension.Equals("sl2", StringComparison.OrdinalIgnoreCase) ? "Matches Steam Cloud's file rules; sync must be enabled in Steam. This is the vanilla save filename." : "Outside Steam Cloud's sync rules (*.sl2).") +
+            (seamless.Checked ? " Keep co-op saves separate from vanilla." : " Co-op saves are separate and will not be loaded.");
+    }
+    bool SettingsSaving() { return saveWorker.IsBusy || saveTimer.Enabled || (!saveFailed && savedRevision != saveRevision); }
+    bool SettingsReady() { return !SettingsSaving() && !saveFailed && savedRevision == saveRevision; }
+    void UpdatePlayButton() { play.Enabled = !worker.IsBusy && SettingsReady(); }
+    void QueueSave() {
+        saveRevision++; saveFailed = false;
+        saveTimer.Stop(); saveTimer.Start();
+        status.Text = "Saving settings...";
+        UpdatePlayButton(); UpdateButton();
+    }
+    void StartSaving() {
+        if (saveWorker.IsBusy || IsDisposed) return;
+        saving = new SettingsChange { Seamless = seamless.Checked, Password = password.Text, Revision = saveRevision };
+        try { saveWorker.RunWorkerAsync(saving); }
+        catch (Exception ex) { saveFailed = true; closeAfterSave = false; ShowSaveError(ex); }
+        UpdatePlayButton(); UpdateButton();
+    }
+    void SaveCompleted(object sender, RunWorkerCompletedEventArgs e) {
+        if (IsDisposed) return;
+        if (InvokeRequired) { BeginInvoke(new Action(() => SaveCompleted(sender, e))); return; }
+        if (saving.Revision != saveRevision) {
+            // A newer edit must reach disk before Play can be enabled.
+            saveTimer.Stop(); StartSaving(); return;
+        }
+        if (e.Error != null) { saveFailed = true; closeAfterSave = false; ShowSaveError(e.Error); }
+        else {
+            savedRevision = saving.Revision; saveFailed = false;
+            if (!worker.IsBusy) status.Text = "Settings saved.";
+        }
+        UpdatePlayButton(); UpdateButton();
+        if (closeAfterSave && SettingsReady()) { closeAfterSave = false; Close(); }
+    }
+    void ShowSaveError(Exception ex) {
+        status.Text = "Could not save settings. Change a setting to retry. " + ex.Message;
+        details.Text = BulletOutput(ex.ToString()); UpdatePlayButton(); UpdateButton();
+    }
+    void PersistSettings(bool enabled, string selectedPassword) {
+        if (enabled && String.IsNullOrWhiteSpace(selectedPassword)) throw new InvalidOperationException("Enter a co-op password. Everyone in your party must use the same password.");
+        if (enabled && !Installed()) throw new IOException("The Seamless Co-op installation is incomplete.");
+        if (Installed()) {
+            string original = File.ReadAllText(iniPath), updated = LauncherFiles.SetPassword(original, selectedPassword);
+            if (updated != original) LauncherFiles.Write(iniPath, updated);
+        }
+        var serializer = new XmlSerializer(typeof(LauncherSettings));
+        using (var writer = new StringWriter()) {
+            serializer.Serialize(writer, new LauncherSettings { Seamless = enabled });
+            LauncherFiles.Write(settingsPath, writer.ToString().Replace("encoding=\"utf-16\"", "encoding=\"utf-8\""));
+        }
+    }
+    protected override void Dispose(bool disposing) {
+        if (disposing) saveTimer.Dispose();
+        base.Dispose(disposing);
+        if (disposing && boldVersionFont != null) boldVersionFont.Dispose();
+    }
+    void SetBusy(bool busy) {
+        check.Enabled = downloadCoop.Enabled = !busy;
+        UpdatePlayButton();
+        seamless.Enabled = !busy && Installed(); password.Enabled = !busy && seamless.Checked;
+        UseWaitCursor = busy; UpdateButton();
+    }
+    void Run(bool validateOnly) {
+        if (worker.IsBusy || !SettingsReady()) return;
+        try {
+            UpdateSaveInfo(); checking = validateOnly;
+            details.Clear(); status.Text = validateOnly ? "Checking setup..." : "Preparing game...";
+            worker.RunWorkerAsync(seamless.Checked); SetBusy(true);
+        } catch (Exception ex) { SetBusy(false); ShowError(ex); }
+    }
+    void InstallArchive(string archive) {
+        if (worker.IsBusy) return;
+        if (SettingsSaving()) { status.Text = "Wait for settings to finish saving, then drop the ZIP again."; return; }
+        wasInstalled = Installed();
+        BeginOperation("install", archive);
+    }
+    void BeginOperation(string action, string archive = null) {
+        if (worker.IsBusy) return;
+        try {
+            if (action == "update" && !SettingsReady()) return;
+            details.Clear();
+            status.Text = action == "install" ? "Validating and installing Seamless Co-op..." : action == "setup" ? "Verifying setup and repairing mod files..." : "Downloading and verifying update...";
+            worker.RunWorkerAsync(new string[] { action, archive }); SetBusy(true);
+        } catch (Exception ex) { SetBusy(false); ShowError(ex); }
+    }
+    void RunBackend(object sender, DoWorkEventArgs e) {
+        var action = e.Argument as string[];
+        if (action != null) {
+            if (action[0] == "install") { string result = SeamlessInstaller.Install(repository, action[1]); try { RepositoryUpdates.RecordCoopVersion(repository, action[1]); } catch { result += Environment.NewLine + "Installed version could not be recorded; it will display as Unknown."; } e.Result = new string[] { "install", result }; return; }
+            if (action[0] == "setup") { e.Result = VerifySetup(repository, action[1] == "Enabled", newest); return; }
+            var release = newest ?? RepositoryUpdates.FetchRelease("HEAD", true);
+            e.Result = new string[] { "update", RepositoryUpdates.Prepare(repository, release) }; return;
+        }
+        e.Result = ExecuteGame(repository, (bool)e.Argument, checking);
+    }
+    public static Tuple<int, string> ExecuteGame(string repository, bool useCoop, bool validateOnly) {
+        string powershell = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "WindowsPowerShell", "v1.0", "powershell.exe");
+        string script = Path.Combine(repository, "launcher", "Start-Q-Souls-1.ps1");
+        var start = new ProcessStartInfo(powershell, "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"" + script + "\" -CoopMode " + (useCoop ? "Enabled" : "Disabled") + (validateOnly ? " -CheckOnly" : "")) {
+            WorkingDirectory = repository, UseShellExecute = false, CreateNoWindow = true, WindowStyle = ProcessWindowStyle.Hidden, RedirectStandardOutput = true, RedirectStandardError = true
+        };
+        using (var process = Process.Start(start)) {
+            var stdout = process.StandardOutput.ReadToEndAsync(); var stderr = process.StandardError.ReadToEndAsync(); process.WaitForExit();
+            return Tuple.Create(process.ExitCode, stdout.Result + stderr.Result);
+        }
+    }
+    public static string BulletOutput(string text) {
+        var lines = (text ?? "").Replace("\r", "").Split('\n');
+        var output = new System.Collections.Generic.List<string>();
+        foreach (string raw in lines) { string line = raw.Trim(); if (line.Length > 0) output.Add(line.StartsWith("\u2022 ") ? line : "\u2022 " + line); }
+        return String.Join(Environment.NewLine, output);
+    }
+    public static string[] VerifySetup(string root, bool useCoop, PublishedVersion latest) {
+        var report = new System.Text.StringBuilder();
+        Tuple<int, string> game = null;
+        try { game = ExecuteGame(root, useCoop, true); report.AppendLine(game.Item2); }
+        catch (Exception ex) { report.AppendLine("Game setup check failed: " + ex.Message); }
+        try {
+            var release = RepositoryUpdates.InstalledRelease(root, latest ?? RepositoryUpdates.FetchRelease("HEAD", true));
+            var damaged = RepositoryUpdates.DamagedFiles(root, release);
+            if (damaged.Count == 0) {
+                report.AppendLine(RepositoryUpdates.VerifySnapshot(root, release));
+                return new[] { "setup", report.ToString(), game != null && game.Item1 == 0 ? "Passed" : "Failed" };
+            }
+            report.AppendLine("Found " + damaged.Count + " missing or changed mod files. Downloading matching files from GitHub.");
+            string job = RepositoryUpdates.Prepare(root, release, true);
+            bool restart = damaged.Exists(file => file.Path.Equals("_launch-Q-Souls-1.exe", StringComparison.OrdinalIgnoreCase) || file.Path.Equals("_launch-Q-Souls-1.exe.config", StringComparison.OrdinalIgnoreCase));
+            if (restart) return new[] { "repair", job, report.ToString() };
+            report.AppendLine(RepositoryUpdates.Apply(job));
+            report.AppendLine(RepositoryUpdates.VerifySnapshot(root, release));
+            game = ExecuteGame(root, useCoop, true);
+            report.AppendLine("Setup check after repair:"); report.AppendLine(game.Item2);
+            return new[] { "setup", report.ToString(), game.Item1 == 0 ? "Passed" : "Failed" };
+        }
+        catch (Exception ex) { report.AppendLine("Mod file verification/repair could not finish: " + ex.Message); return new[] { "setup", report.ToString(), "Failed" }; }
+    }
+    void OperationCompleted(object sender, RunWorkerCompletedEventArgs e) {
+        if (IsDisposed) return;
+        if (InvokeRequired) { BeginInvoke(new Action(() => OperationCompleted(sender, e))); return; }
+        SetBusy(false);
+        if (e.Error != null) { ShowError(e.Error); return; }
+        var action = e.Result as string[];
+        if (action != null) {
+            if (action[0] == "update" || action[0] == "repair") {
+                try {
+                    string helper = Path.Combine(action[1], "UpdateHelper.exe");
+                    Process.Start(new ProcessStartInfo(helper, "--apply-update \"" + action[1] + "\" " + Process.GetCurrentProcess().Id) { UseShellExecute = false, CreateNoWindow = true, WorkingDirectory = action[1] });
+                    restarting = true; Close();
+                } catch (Exception ex) { ShowError(ex); }
+                return;
+            }
+            details.Text = BulletOutput(action[1]);
+            if (action[0] == "setup") { status.Text = action[2] == "Passed" ? "Setup verified. See details below." : "Setup verification needs attention. See details below."; return; }
+            RefreshInstallation();
+            if (!wasInstalled) { password.Text = LauncherFiles.ReadValue(File.ReadAllText(iniPath), "PASSWORD", "cooppassword", ""); seamless.Checked = true; }
+            UpdateSaveInfo(); status.Text = "Installation complete. Set your shared password, then click Play.";
+            return;
+        }
+        var result = (Tuple<int, string>)e.Result;
+        details.Text = BulletOutput(result.Item2);
+        status.Text = result.Item1 == 0 ? (checking ? "Setup checks passed. Game was not launched." : "Game launched. You can close the launcher.") : "Could not complete the operation. See details below.";
+    }
+    void ShowError(Exception ex) { status.Text = ex.Message; details.Text = BulletOutput(ex.ToString()); }
+}
+
+public sealed class UpdateWindow : Form
+{
+    public UpdateWindow(string job, int parentId) {
+        Text = "Q Souls 1 Update";
+        StartPosition = FormStartPosition.CenterScreen; ClientSize = new Size(420, 100);
+        AutoScaleDimensions = new SizeF(96, 96); AutoScaleMode = AutoScaleMode.Dpi;
+        using (var stream = typeof(LauncherWindow).Assembly.GetManifestResourceStream("QS1.ico"))
+        using (var icon = new Icon(stream)) Icon = (Icon)icon.Clone();
+        var label = new Label { Dock = DockStyle.Fill, Padding = new Padding(16), Text = "Installing the verified update...", AutoSize = false };
+        Controls.Add(label);
+        var worker = new BackgroundWorker();
+        FormClosing += delegate(object sender, FormClosingEventArgs e) { if (worker.IsBusy) e.Cancel = true; };
+        worker.DoWork += delegate(object sender, DoWorkEventArgs e) {
+            Process parent = null;
+            try { parent = Process.GetProcessById(parentId); } catch (ArgumentException) { }
+            if (parent != null) using (parent) { if (!parent.WaitForExit(60000)) throw new IOException("Close the launcher before updating. No files were changed."); }
+            string applied = RepositoryUpdates.Apply(job);
+            var plan = RepositoryUpdates.Json().Deserialize<UpdatePlan>(File.ReadAllText(Path.Combine(job, "plan.json")));
+            if (plan.Repair) {
+                bool coop = false;
+                string settings = Path.Combine(plan.Repository, ".local", "launcher.xml");
+                if (File.Exists(settings)) using (var input = File.OpenRead(settings)) coop = ((LauncherSettings)new XmlSerializer(typeof(LauncherSettings)).Deserialize(input)).Seamless;
+                var checks = LauncherWindow.ExecuteGame(plan.Repository, coop, true);
+                LauncherFiles.Write(Path.Combine(plan.Repository, ".local", "setup-report.txt"), LauncherWindow.BulletOutput(applied + Environment.NewLine + RepositoryUpdates.VerifySnapshot(plan.Repository, plan.Release) + Environment.NewLine + checks.Item2));
+            }
+            e.Result = applied;
+        };
+        worker.RunWorkerCompleted += delegate(object sender, RunWorkerCompletedEventArgs e) {
+            if (e.Error != null) MessageBox.Show(e.Error.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Error);
+            else {
+                try {
+                    var plan = RepositoryUpdates.Json().Deserialize<UpdatePlan>(File.ReadAllText(Path.Combine(job, "plan.json")));
+                    Process.Start(new ProcessStartInfo(Path.Combine(plan.Repository, "_launch-Q-Souls-1.exe")) { UseShellExecute = true, WorkingDirectory = plan.Repository });
+                } catch (Exception ex) { MessageBox.Show("Update installed. Reopen the launcher manually. " + ex.Message, Text); }
+            }
+            Close();
+        };
+        Shown += delegate { worker.RunWorkerAsync(); };
+    }
+}
+
+static class LauncherEntry
+{
+    [STAThread]
+    static void Main(string[] args) {
+        Application.EnableVisualStyles(); Application.SetCompatibleTextRenderingDefault(false);
+        try {
+            if (args.Length == 3 && args[0] == "--apply-update") Application.Run(new UpdateWindow(args[1], Int32.Parse(args[2])));
+            else Application.Run(new LauncherWindow(AppDomain.CurrentDomain.BaseDirectory));
+        } catch (Exception ex) { MessageBox.Show(ex.Message, "Q Souls 1 Launcher", MessageBoxButtons.OK, MessageBoxIcon.Error); }
+    }
+}

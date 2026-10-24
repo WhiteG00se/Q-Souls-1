@@ -53,10 +53,11 @@ function Read-SavedAudioLevels {
 }
 
 function Get-ProfileAudioLevels {
-    param([bool]$Seamless)
+    param([bool]$Seamless, [ValidatePattern('^[a-zA-Z0-9]{1,120}$')][string]$SaveExtension)
     $root = Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'NBGI\DARK SOULS REMASTERED'
     if (-not (Test-Path -LiteralPath $root -PathType Container)) { return Read-SavedAudioLevels }
-    $filename = if ($Seamless) { 'DRAKS0005.co2' } else { 'DRAKS0005.sl2' }
+    if (-not $SaveExtension) { $SaveExtension = if ($Seamless) { 'co2' } else { 'sl2' } }
+    $filename = 'DRAKS0005.' + $SaveExtension
     $account = (Get-ItemProperty -LiteralPath 'HKCU:\Software\Valve\Steam\ActiveProcess' -ErrorAction SilentlyContinue).ActiveUser
     if ($account) {
         $steamId = [uint64]76561197960265728 + [uint32]$account
