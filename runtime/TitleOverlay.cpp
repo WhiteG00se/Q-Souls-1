@@ -1,6 +1,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include "TitleOverlay.h"
 #include <d3d11_1.h>
+#include <tlhelp32.h>
 #include <d3dcompiler.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -315,13 +316,32 @@ HRESULT WINAPI createFactory(REFIID iid, void **factory)
     }
     return hr;
 }
-} // namespace
+// Do not replace DXGI dispatch methods while RTSS is preparing delayed
+// injection: its probe must see native Present to locate the hook target.
+bool rtssRunning()
+{
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snapshot == INVALID_HANDLE_VALUE) return false;
+    PROCESSENTRY32W entry = {};
+    entry.dwSize = sizeof(entry);
+    bool found = false;
+    if (Process32FirstW(snapshot, &entry)) do {
+        if (!_wcsicmp(entry.szExeFile, L"RTSS.exe")) { found = true; break; }
+    } while (Process32NextW(snapshot, &entry));
+    CloseHandle(snapshot);
+    return found || GetModuleHandleW(L"RTSSHooks64.dll");
+}
 
-extern "C" DWORD initializeTitleOverlay(const wchar_t *root, void **factorySlot,
-                                        BOOL (*visible)(void), void (*log)(const char *))
+DWORD configureTitleOverlay(const wchar_t *root, void **factorySlot,
+                                        BOOL (*visible)(void), void (*log)(const char *), bool nativePresentation)
 {
     DWORD error = readVersion(root);
     if (error) { log("Cannot read VERSION.txt: expected a numeric version such as 0.3."); return error; }
+    if (nativePresentation) {
+        log(label);
+        log("RTSS detected: title version label disabled to preserve MSI Afterburner overlay hooking.");
+        return ERROR_SUCCESS;
+    }
     HMODULE compiler = LoadLibraryExW(L"d3dcompiler_47.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
     if (!compiler) return GetLastError();
     compileShader = (decltype(compileShader))(void *)GetProcAddress(compiler, "D3DCompile");
@@ -334,4 +354,11 @@ extern "C" DWORD initializeTitleOverlay(const wchar_t *root, void **factorySlot,
     if (!VirtualProtect(factorySlot, sizeof(*factorySlot), old, &ignored)) return GetLastError();
     log(label);
     return ERROR_SUCCESS;
+}
+} // namespace
+
+extern "C" DWORD initializeTitleOverlay(const wchar_t *root, void **factorySlot,
+                                        BOOL (*visible)(void), void (*log)(const char *))
+{
+    return configureTitleOverlay(root, factorySlot, visible, log, rtssRunning());
 }

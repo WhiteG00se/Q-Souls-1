@@ -90,7 +90,12 @@ int wmain(int argc, wchar_t **argv)
           !strcmp(label, "Q Souls 1 v 12.34.5"), "trim whitespace and load changed version");
 
     void *factorySlot = (void *)(CreateFactory)CreateDXGIFactory;
-    CHECK(!initializeTitleOverlay(argv[1], &factorySlot, testVisible, testLog), "overlay initialization");
+    void *nativeFactory = factorySlot;
+    CHECK(!configureTitleOverlay(argv[1], &factorySlot, testVisible, testLog, true), "RTSS compatibility initialization");
+    CHECK(factorySlot == nativeFactory && !hookCount && !compileShader, "RTSS path leaves factory import and graphics hooks untouched");
+    CHECK(!initializeTitleOverlay(argv[1], &factorySlot, testVisible, testLog), "production overlay initialization");
+    if (rtssRunning()) CHECK(factorySlot == nativeFactory && !hookCount, "running RTSS detected before installing graphics hooks");
+    if (factorySlot == nativeFactory) CHECK(!configureTitleOverlay(argv[1], &factorySlot, testVisible, testLog, false), "standalone overlay initialization");
     Com<IDXGIFactory> factory;
     CHECK(SUCCEEDED(((CreateFactory)factorySlot)(__uuidof(IDXGIFactory), (void **)&factory.p)), "hooked factory creation");
     // Repeated creation of a shared COM vtable must not chain back into our hook.
@@ -210,6 +215,6 @@ int wmain(int argc, wchar_t **argv)
     wchar_t fixturePath[MAX_PATH];
     swprintf(fixturePath, MAX_PATH, L"%ls\\VERSION.txt", argv[2]);
     DeleteFileW(fixturePath);
-    puts("PASS: version loading, hooks, visibility, pixel placement, state restoration, resizing, recreation.");
+    puts("PASS: RTSS native presentation compatibility, version loading, hooks, visibility, pixel placement, state restoration, resizing, recreation.");
     return 0;
 }
