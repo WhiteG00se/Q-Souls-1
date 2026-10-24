@@ -16,7 +16,7 @@ static HRESULT STDMETHODCALLTYPE testPresent(IDXGISwapChain *, UINT interval, UI
 static bool fixture(const wchar_t *root, const char *data, DWORD length)
 {
     wchar_t path[MAX_PATH];
-    swprintf(path, MAX_PATH, L"%ls\\VERSION", root);
+    swprintf(path, MAX_PATH, L"%ls\\VERSION.txt", root);
     HANDLE file = CreateFileW(path, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (file == INVALID_HANDLE_VALUE) return false;
     DWORD written;
@@ -74,7 +74,7 @@ static HRESULT pixels(IDXGISwapChain *chain, ID3D11Device *device,
 int wmain(int argc, wchar_t **argv)
 {
     CHECK(argc == 3, "arguments: repository, temporary fixture directory");
-    CHECK(readVersion(argv[1]) == ERROR_SUCCESS && !strncmp(label, "Q Souls 1 v ", 12), "repo VERSION label");
+    CHECK(readVersion(argv[1]) == ERROR_SUCCESS && !strncmp(label, "Q Souls 1 v ", 12), "repo VERSION.txt label");
     CreateDirectoryW(argv[2], nullptr);
     CHECK(readVersion(argv[2]) == ERROR_FILE_NOT_FOUND, "missing version rejected");
     const char *invalid[] = {"", " ", ".1", "1.", "1..2", "v0.1", "1\n2", "1/2", "1.2-beta"};
@@ -126,7 +126,7 @@ int wmain(int argc, wchar_t **argv)
     CHECK(SUCCEEDED(chain->Present(0, 0)), "title Present");
     Pixels full;
     CHECK(SUCCEEDED(pixels(chain.p, device.p, context.p, &full)) && full.count > 100, "label has visible pixels");
-    CHECK(full.minX > 1600 && full.maxX < 1910 && full.maxX > 1890 && full.minY < 30 && full.maxY < 50, "top-right full-HD placement");
+    CHECK(full.minX > 1600 && full.maxX < 1900 && full.maxX > 1880 && full.minY >= 84 && full.minY < 105 && full.maxY < 125, "top-right full-HD placement");
 
     // Sentinel state: the overlay must restore even bindings it never uses.
     D3D11_TEXTURE2D_DESC sentinelDesc = {};
@@ -179,19 +179,36 @@ int wmain(int argc, wchar_t **argv)
     CHECK(SUCCEEDED(clear(chain.p, device.p, context.p)) && SUCCEEDED(renderer.draw(chain.p)), "draw after resize");
     Pixels small;
     CHECK(SUCCEEDED(pixels(chain.p, device.p, context.p, &small)) && small.count > 50, "resized label visible");
-    CHECK(small.minX > 1050 && small.maxX > 1250 && small.maxX < 1275 && small.maxY < 35, "top-right 720p placement");
+    CHECK(small.minX > 1050 && small.maxX > 1250 && small.maxX < 1275 && small.minY >= 56 && small.maxY < 85, "top-right 720p placement");
     CHECK(full.maxY - full.minY > small.maxY - small.minY, "font scales with resolution");
     CHECK(SUCCEEDED(chain->ResizeBuffers(1, 2560, 1080, DXGI_FORMAT_UNKNOWN, 0)), "ultrawide resize");
     CHECK(SUCCEEDED(clear(chain.p, device.p, context.p)) && SUCCEEDED(renderer.draw(chain.p)), "ultrawide draw");
     Pixels wide;
-    CHECK(SUCCEEDED(pixels(chain.p, device.p, context.p, &wide)) && wide.minX > 2200 && wide.maxX > 2530 && wide.maxX < 2550, "ultrawide right alignment");
+    CHECK(SUCCEEDED(pixels(chain.p, device.p, context.p, &wide)) && wide.minX == full.minX + 320 && wide.maxX == full.maxX + 320 && wide.minY == full.minY && wide.maxY == full.maxY, "ultrawide centered 16:9 alignment");
     CHECK(wide.maxY - wide.minY == full.maxY - full.minY, "ultrawide preserves font size");
+    struct Screen { UINT width, height; float scale, left, top; };
+    const Screen screens[] = {
+        {2560, 1440, 4.0f / 3.0f, 0, 0},
+        {3440, 1440, 4.0f / 3.0f, 440, 0},
+        {3840, 2160, 2, 0, 0},
+        {5120, 1440, 4.0f / 3.0f, 1280, 0},
+        {1920, 1440, 1, 0, 180}
+    };
+    for (const Screen &screen : screens) {
+        CHECK(SUCCEEDED(chain->ResizeBuffers(1, screen.width, screen.height, DXGI_FORMAT_UNKNOWN, 0)), "resolution resize");
+        CHECK(SUCCEEDED(clear(chain.p, device.p, context.p)) && SUCCEEDED(renderer.draw(chain.p)), "resolution draw");
+        Pixels scaled;
+        CHECK(SUCCEEDED(pixels(chain.p, device.p, context.p, &scaled)) && scaled.count > 100, "scaled label visible");
+        CHECK(fabsf(((float)scaled.maxX - screen.left) / screen.scale - (float)full.maxX) <= 2 &&
+              fabsf(((float)scaled.minY - screen.top) / screen.scale - (float)full.minY) <= 2,
+              "same relative position within centered 16:9 area across resolutions");
+    }
     renderer.reset();
     CHECK(SUCCEEDED(renderer.draw(chain.p)), "recreate renderer after device reset");
     renderer.reset();
     chain.reset(); DestroyWindow(window);
     wchar_t fixturePath[MAX_PATH];
-    swprintf(fixturePath, MAX_PATH, L"%ls\\VERSION", argv[2]);
+    swprintf(fixturePath, MAX_PATH, L"%ls\\VERSION.txt", argv[2]);
     DeleteFileW(fixturePath);
     puts("PASS: version loading, hooks, visibility, pixel placement, state restoration, resizing, recreation.");
     return 0;

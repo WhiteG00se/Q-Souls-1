@@ -5,5 +5,5 @@
 3. For co-op, set a session password in `SeamlessCoop_here/SeamlessCoop/ds1sc_settings.ini`; everyone must use the same password.
 4. Keep Steam running and run `_launch-Q-Souls-1.bat`.
 
-The title-menu version is read from `VERSION` at launch; update that file to change it.
+The title-menu version is read from `VERSION.txt` at launch
 Startup intro is skipped

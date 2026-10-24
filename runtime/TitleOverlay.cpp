@@ -32,7 +32,7 @@ struct Lock {
 DWORD readVersion(const wchar_t *root)
 {
     wchar_t path[MAX_PATH];
-    if (swprintf(path, MAX_PATH, L"%ls\\VERSION", root) < 0) return ERROR_BUFFER_OVERFLOW;
+    if (swprintf(path, MAX_PATH, L"%ls\\VERSION.txt", root) < 0) return ERROR_BUFFER_OVERFLOW;
     HANDLE file = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
                               FILE_ATTRIBUTE_NORMAL, nullptr);
     if (file == INVALID_HANDLE_VALUE) return GetLastError();
@@ -46,6 +46,7 @@ DWORD readVersion(const wchar_t *root)
     const char *space = " \t\r\n";
     while (start < end && data[start] && strchr(space, data[start])) ++start;
     while (end > start && data[end - 1] && strchr(space, data[end - 1])) --end;
+
     if (start == end || end - start > 31) return ERROR_INVALID_DATA;
     bool digit = false;
     for (size_t i = start; i < end; ++i) {
@@ -65,7 +66,10 @@ Layout layout(UINT width, UINT height)
     float scale = (float)height / 1080.0f;
     if ((float)width / 1920.0f < scale) scale = (float)width / 1920.0f;
     UINT font = (UINT)(26.0f * scale + 0.5f);
-    return {font < 8 ? 8 : font, (float)width - 12.0f * scale, 10.0f * scale};
+    // Anchor to a centered 16:9 area, including on ultrawide screens.
+    float right = ((float)width + 1920.0f * scale) * 0.5f - 24.0f * scale;
+    float top = ((float)height - 1080.0f * scale) * 0.5f + 84.0f * scale;
+    return {font < 8 ? 8 : font, right, top};
 }
 
 struct Renderer {
@@ -317,7 +321,7 @@ extern "C" DWORD initializeTitleOverlay(const wchar_t *root, void **factorySlot,
                                         BOOL (*visible)(void), void (*log)(const char *))
 {
     DWORD error = readVersion(root);
-    if (error) { log("Cannot read VERSION: expected a numeric version such as 0.1."); return error; }
+    if (error) { log("Cannot read VERSION.txt: expected a numeric version such as 0.3."); return error; }
     HMODULE compiler = LoadLibraryExW(L"d3dcompiler_47.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
     if (!compiler) return GetLastError();
     compileShader = (decltype(compileShader))(void *)GetProcAddress(compiler, "D3DCompile");

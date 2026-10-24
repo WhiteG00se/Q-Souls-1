@@ -9,5 +9,6 @@
 - The mod will be distributed as the whole repository as a GitHub ZIP or repo clone, runnable through `_launch-Q-Souls-1.bat` without requiring a compiler.
 - Do not add game files or third-party mods without permission. Keep user-supplied optional mods and extracted game data out of Git.
 - Shared SDKs/tools live under D:/AI. Keep temporary files under `D:\AI\Temp\Q-Souls-1`, outside Git.
+- For uncommitted changes, compare the version in `VERSION.txt` with its value in `HEAD`. If it is not already higher, increment its minor version once.
 - Never commit or push unless requested.
 - Only the user performs E2E testing. Do not launch or control the game for testing; limit agent checks to builds, static checks, and isolated tests.
