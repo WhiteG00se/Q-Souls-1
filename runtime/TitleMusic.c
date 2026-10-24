@@ -12,6 +12,7 @@
 static HMODULE self;
 static HANDLE changed, ready;
 static volatile LONG active;
+static volatile LONG overlayActive;
 static uintptr_t cameraGlobal, optionsGlobal;
 static BYTE selectedAudio[3] = {10, 10, 10};
 static BOOL optionsLoaded;
@@ -29,7 +30,7 @@ static void readStartupAudio(void)
     optionsLoaded = FALSE;
 }
 
-static void *titleMovie;
+static void *titleMovie, *openingMovie;
 static wchar_t trackPath[MAX_PATH], logPath[MAX_PATH];
 static void * (__stdcall *realOpen)(const char *, uint32_t);
 static void (__stdcall *realClose)(void *);
@@ -40,6 +41,10 @@ static void *musicGroup, *musicSound, *musicChannel, *musicEventSystem;
 static void *trackData;
 static unsigned int trackLength;
 static void *titleSystem;
+static void *gameSystem, *musicCategory;
+static BOOL ownsTitleSystem, gameMixerSeen, musicSuppressed;
+static int previousMusicMute;
+static unsigned int resumePosition;
 static int (__stdcall *systemCreate)(void **);
 static int (__stdcall *systemInit)(void *, int, unsigned int, void *);
 static int (__stdcall *systemUpdate)(void *);
@@ -70,6 +75,12 @@ typedef struct {
 _Static_assert(sizeof(LegacySoundInfo) == 216, "Unexpected FMOD 4.44 x64 ABI");
 static int (__stdcall *realGetCategory)(void *, const char *, void **);
 static int (__stdcall *realReleaseEvents)(void *);
+static int (__stdcall *realInitEvents)(void *, int, unsigned int, void *, unsigned int);
+static int (__stdcall *realUpdateEvents)(void *);
+static int (__stdcall *realSetDriver)(void *, int);
+static int (__stdcall *eventsGetSystem)(void *, void **);
+static int (__stdcall *categoryGetMute)(void *, int *);
+static int (__stdcall *categorySetMute)(void *, int);
 static int (__stdcall *categoryGetGroup)(void *, void **);
 static int (__stdcall *groupGetVolume)(void *, float *);
 static int (__stdcall *systemCreateStream)(void *, const char *, unsigned int, void *, void **);
@@ -78,6 +89,8 @@ static int (__stdcall *channelSetGroup)(void *, void *);
 static int (__stdcall *channelSetVolume)(void *, float);
 static int (__stdcall *channelGetAudibility)(void *, float *);
 static int (__stdcall *channelSetPaused)(void *, int);
+static int (__stdcall *channelGetPosition)(void *, unsigned int *, unsigned int);
+static int (__stdcall *channelSetPosition)(void *, unsigned int, unsigned int);
 static int (__stdcall *channelStop)(void *);
 static int (__stdcall *soundRelease)(void *);
 
@@ -107,6 +120,9 @@ static BOOL bindMixer(void)
     HMODULE events = GetModuleHandleW(L"fmod_event64.dll");
     if (!core || !events) return FALSE;
     categoryGetGroup = (void *)GetProcAddress(events, "FMOD_EventCategory_GetChannelGroup");
+    eventsGetSystem = (void *)GetProcAddress(events, "FMOD_EventSystem_GetSystemObject");
+    categoryGetMute = (void *)GetProcAddress(events, "FMOD_EventCategory_GetMute");
+    categorySetMute = (void *)GetProcAddress(events, "FMOD_EventCategory_SetMute");
     groupGetVolume = (void *)GetProcAddress(core, "FMOD_ChannelGroup_GetVolume");
     systemCreate = (void *)GetProcAddress(core, "FMOD_System_Create");
     systemInit = (void *)GetProcAddress(core, "FMOD_System_Init");
@@ -118,9 +134,12 @@ static BOOL bindMixer(void)
     channelSetVolume = (void *)GetProcAddress(core, "FMOD_Channel_SetVolume");
     channelGetAudibility = (void *)GetProcAddress(core, "FMOD_Channel_GetAudibility");
     channelSetPaused = (void *)GetProcAddress(core, "FMOD_Channel_SetPaused");
+    channelGetPosition = (void *)GetProcAddress(core, "FMOD_Channel_GetPosition");
+    channelSetPosition = (void *)GetProcAddress(core, "FMOD_Channel_SetPosition");
     channelStop = (void *)GetProcAddress(core, "FMOD_Channel_Stop");
     soundRelease = (void *)GetProcAddress(core, "FMOD_Sound_Release");
-    return categoryGetGroup && groupGetVolume && systemCreate && systemInit &&
+    return eventsGetSystem && categoryGetMute && categorySetMute &&
+           channelGetPosition && channelSetPosition && categoryGetGroup && groupGetVolume && systemCreate && systemInit &&
            systemUpdate && systemRelease && systemCreateStream && systemPlaySound &&
            channelSetGroup && channelSetVolume && channelGetAudibility && channelSetPaused && channelStop && soundRelease;
 }
@@ -174,7 +193,42 @@ static void stopMusic(void)
     // A memory stream can read this buffer until Sound::release has completed.
     if (trackData) { HeapFree(GetProcessHeap(), 0, trackData); trackData = NULL; }
     trackLength = 0;
-    if (titleSystem) { systemRelease(titleSystem); titleSystem = NULL; }
+    if (titleSystem && ownsTitleSystem) systemRelease(titleSystem);
+    titleSystem = NULL;
+    ownsTitleSystem = FALSE;
+}
+
+// Only the game's music category is muted. The custom channel uses its master bus.
+static void suppressGameMusic(BOOL wanted)
+{
+    if (!musicCategory) return;
+    if (wanted) {
+        if (!musicSuppressed) {
+            int result = categoryGetMute(musicCategory, &previousMusicMute);
+            if (result) { musicFailure("read game music mute", (unsigned int)result); return; }
+        }
+        int result = categorySetMute(musicCategory, TRUE);
+        if (!result) musicSuppressed = TRUE;
+        else musicFailure("mute game music", (unsigned int)result);
+    } else if (musicSuppressed) {
+        int result = categorySetMute(musicCategory, previousMusicMute);
+        if (!result) musicSuppressed = FALSE;
+        else musicFailure("restore game music", (unsigned int)result);
+    }
+}
+
+static void captureMusicCategory(void)
+{
+    if (!musicCategory && musicEventSystem) {
+        void *category = NULL, *group = NULL;
+        if (!realGetCategory(musicEventSystem, "music", &category) &&
+            !categoryGetGroup(category, &group)) {
+            musicCategory = category;
+            musicGroup = group;
+            logMessage("Connected to game music category; custom theme shares game output.");
+        }
+    }
+    suppressGameMusic(InterlockedCompareExchange(&active, 0, 0) != 0);
 }
 
 // The live options are all zero until profile loading after the title prompt.
@@ -201,24 +255,35 @@ static float titleGain(void)
 
 static BOOL startMusic(void)
 {
+    // Once game initialization begins, never reopen a separate output device.
+    if (gameMixerSeen && !gameSystem) return FALSE;
     DWORD fileError = readTrack();
     if (fileError) { musicFailure("Windows file read", fileError); return FALSE; }
     LegacySoundInfo info = {0};
     info.size = sizeof(info);
     info.length = trackLength;
     const char *stage = "independent mixer creation";
-    int result = systemCreate(&titleSystem);
-    if (!result) { stage = "independent mixer initialization"; result = systemInit(titleSystem, 8, 0, NULL); }
+    int result = 0;
+    titleSystem = gameSystem;
+    if (!titleSystem) {
+        ownsTitleSystem = TRUE;
+        result = systemCreate(&titleSystem);
+        if (!result) { stage = "independent mixer initialization"; result = systemInit(titleSystem, 8, 0, NULL); }
+    }
     if (!result) {
         stage = "memory stream creation";
         result = systemCreateStream(titleSystem, trackData, 0x0000080a, &info, &musicSound);
     }
-    // Independent playback works before the game starts updating its own mixer.
+    // The worker also services the shared core mixer while game menus are idle.
     if (!result) {
         stage = "channel creation";
         result = systemPlaySound(titleSystem, -1, musicSound, TRUE, &musicChannel);
     }
     if (!result) { stage = "gain"; result = channelSetVolume(musicChannel, titleGain()); }
+    if (!result && resumePosition) {
+        stage = "resume position";
+        result = channelSetPosition(musicChannel, resumePosition, 1); // FMOD_TIMEUNIT_MS
+    }
     if (!result) { stage = "unpause"; result = channelSetPaused(musicChannel, FALSE); }
     if (result) {
         musicFailure(stage, (unsigned int)result);
@@ -227,22 +292,64 @@ static BOOL startMusic(void)
     }
     lastFailureStage = NULL;
     lastFailureCode = 0;
+    resumePosition = 0;
     return TRUE;
 }
 
 static int __stdcall getCategory(void *system, const char *name, void **category)
 {
-    int result = realGetCategory(system, name, category);
     EnterCriticalSection(&audioLock);
-    if (!musicGroup) {
-        void *music = NULL, *group = NULL;
-        if (!realGetCategory(system, "music", &music) && !categoryGetGroup(music, &group)) {
-            musicGroup = group;
-            musicEventSystem = system;
-            logMessage("Connected to in-game music volume (title gain: 40%).");
-            SetEvent(changed);
-        }
+    int result = realGetCategory(system, name, category);
+    if (system == musicEventSystem) captureMusicCategory();
+    LeaveCriticalSection(&audioLock);
+    return result;
+}
+
+static int __stdcall initEvents(void *system, int channels, unsigned int flags, void *extra, unsigned int eventFlags)
+{
+    EnterCriticalSection(&audioLock);
+    gameMixerSeen = TRUE;
+    if (musicChannel) {
+        int result = channelGetPosition(musicChannel, &resumePosition, 1);
+        if (result) { resumePosition = 0; musicFailure("save position", (unsigned int)result); }
     }
+    // Release the early output before the game's initialization can open another.
+    stopMusic();
+    suppressGameMusic(FALSE);
+    musicSuppressed = FALSE;
+    gameSystem = NULL;
+    musicEventSystem = musicCategory = musicGroup = NULL;
+    int result = realInitEvents(system, channels, flags, extra, eventFlags);
+    if (!result) {
+        musicEventSystem = system;
+        int coreResult = eventsGetSystem(system, &gameSystem);
+        if (coreResult) {
+            gameSystem = NULL;
+            musicFailure("get game mixer", (unsigned int)coreResult);
+        }
+        captureMusicCategory();
+        if (InterlockedCompareExchange(&active, 0, 0)) startMusic();
+    } else musicFailure("game mixer initialization", (unsigned int)result);
+    SetEvent(changed);
+    LeaveCriticalSection(&audioLock);
+    return result;
+}
+
+static void updateMusic(void);
+
+static int __stdcall updateEvents(void *system)
+{
+    EnterCriticalSection(&audioLock);
+    if (system == musicEventSystem) updateMusic();
+    int result = realUpdateEvents(system);
+    LeaveCriticalSection(&audioLock);
+    return result;
+}
+
+static int __stdcall setDriver(void *system, int driver)
+{
+    EnterCriticalSection(&audioLock);
+    int result = realSetDriver(system, driver);
     LeaveCriticalSection(&audioLock);
     return result;
 }
@@ -252,9 +359,15 @@ static int __stdcall releaseEvents(void *system)
     EnterCriticalSection(&audioLock);
     if (system == musicEventSystem) {
         stopMusic();
+        suppressGameMusic(FALSE);
+        musicSuppressed = FALSE;
+        resumePosition = 0;
+        openingMovie = NULL;
+        gameSystem = musicCategory = NULL;
         musicGroup = NULL;
         musicEventSystem = NULL;
         InterlockedExchange(&active, 0);
+        InterlockedExchange(&overlayActive, 0);
     }
     int result = realReleaseEvents(system);
     LeaveCriticalSection(&audioLock);
@@ -343,24 +456,28 @@ static BOOL gameplayLoaded(void)
 
 static BOOL titleOverlayVisible(void)
 {
-    return InterlockedCompareExchange(&active, 0, 0) != 0 && !gameplayLoaded();
+    return InterlockedCompareExchange(&overlayActive, 0, 0) != 0 &&
+           InterlockedCompareExchange(&active, 0, 0) != 0 && !gameplayLoaded();
 }
 
 // Playback does not wait for the game to expose or update its music mixer.
 static void updateMusic(void)
 {
-    if (InterlockedCompareExchange(&active, 0, 0) && gameplayLoaded()) {
+    EnterCriticalSection(&audioLock);
+    if (InterlockedCompareExchange(&active, 0, 0) && !openingMovie && gameplayLoaded()) {
         InterlockedExchange(&active, 0);
+        InterlockedExchange(&overlayActive, 0);
         logMessage("Gameplay loaded.");
     }
-    EnterCriticalSection(&audioLock);
     BOOL wanted = InterlockedCompareExchange(&active, 0, 0) != 0;
+    captureMusicCategory();
     if (wanted && !musicChannel) {
         if (startMusic()) logMessage("Title music playing.");
     } else if (!wanted && musicChannel) {
         stopMusic();
         logMessage("Title music stopped.");
     }
+    if (!wanted) resumePosition = 0;
     if (musicChannel) {
         float gain = titleGain(), audible = -1.0f;
         int volumeResult = channelSetVolume(musicChannel, gain);
@@ -401,42 +518,58 @@ static DWORD WINAPI musicThread(void *unused)
     }
     EnterCriticalSection(&audioLock);
     stopMusic();
+    suppressGameMusic(FALSE);
     LeaveCriticalSection(&audioLock);
     return 0;
 }
 static void * __stdcall openMovie(const char *name, uint32_t flags)
 {
+    EnterCriticalSection(&audioLock);
     void *movie = realOpen(name, flags);
     const char *filename = strrchr(name, '\\');
     if (!filename) filename = strrchr(name, '/');
     filename = filename ? filename + 1 : name;
     if (movie && _stricmp(filename, "frpg_title.bik") == 0) {
         titleMovie = movie;
-        // Leave all other movies, including the opening cinematic, untouched.
+        openingMovie = NULL;
         soundOnOff(movie, 0);
         InterlockedExchange(&active, 1);
+        InterlockedExchange(&overlayActive, 1);
+        captureMusicCategory();
         SetEvent(changed);
         logMessage("Title movie opened.");
     }
     if (movie && _stricmp(filename, "frpg_title.bik") != 0) {
-        InterlockedExchange(&active, 0);
+        InterlockedExchange(&overlayActive, 0);
+        if (_stricmp(filename, "frpg_opening.bik") == 0 && InterlockedCompareExchange(&active, 0, 0)) {
+            openingMovie = movie;
+            soundOnOff(movie, 0);
+            logMessage("Opening cinematic muted; custom theme continues.");
+        } else {
+            InterlockedExchange(&active, 0);
+            stopMusic();
+            suppressGameMusic(FALSE);
+        }
         SetEvent(changed);
     }
+    LeaveCriticalSection(&audioLock);
     return movie;
 }
 
 static void __stdcall closeMovie(void *movie)
 {
+    EnterCriticalSection(&audioLock);
+    if (movie == openingMovie) openingMovie = NULL;
     if (movie == titleMovie) {
         titleMovie = NULL;
         logMessage("Title movie closed.");
     }
     realClose(movie);
+    LeaveCriticalSection(&audioLock);
 }
 
-static void **findImport(const char *library, const char *name)
+static void **findImportInImage(BYTE *base, const char *library, const char *name)
 {
-    BYTE *base = (BYTE *)GetModuleHandleW(NULL);
     IMAGE_DOS_HEADER *dos = (IMAGE_DOS_HEADER *)base;
     IMAGE_NT_HEADERS64 *nt = (IMAGE_NT_HEADERS64 *)(base + dos->e_lfanew);
     DWORD rva = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress;
@@ -454,6 +587,11 @@ static void **findImport(const char *library, const char *name)
         }
     }
     return NULL;
+}
+
+static void **findImport(const char *library, const char *name)
+{
+    return findImportInImage((BYTE *)GetModuleHandleW(NULL), library, name);
 }
 
 static BOOL replaceImport(void **slot, void *replacement)
@@ -499,9 +637,19 @@ __declspec(dllexport) DWORD WINAPI InitializeQSouls(void *unused)
         "?getCategory@EventSystem@FMOD@@QEAA?AW4FMOD_RESULT@@PEBDPEAPEAVEventCategory@2@@Z");
     void **releaseSlot = findImport("fmod_event64.dll",
         "?release@EventSystem@FMOD@@QEAA?AW4FMOD_RESULT@@XZ");
-    if (!categorySlot || !releaseSlot || !bindMixer()) return ERROR_PROC_NOT_FOUND;
+    void **initSlot = findImport("fmod_event64.dll",
+        "?init@EventSystem@FMOD@@QEAA?AW4FMOD_RESULT@@HIPEAXI@Z");
+    void **updateSlot = findImport("fmod_event64.dll",
+        "?update@EventSystem@FMOD@@QEAA?AW4FMOD_RESULT@@XZ");
+    void **driverSlot = findImport("fmodex64.dll",
+        "?setDriver@System@FMOD@@QEAA?AW4FMOD_RESULT@@H@Z");
+    if (!categorySlot || !releaseSlot || !initSlot || !updateSlot || !driverSlot || !bindMixer())
+        return ERROR_PROC_NOT_FOUND;
     realGetCategory = (void *)*categorySlot;
     realReleaseEvents = (void *)*releaseSlot;
+    realInitEvents = (void *)*initSlot;
+    realUpdateEvents = (void *)*updateSlot;
+    realSetDriver = (void *)*driverSlot;
     InitializeCriticalSection(&audioLock);
     realOpen = (void *)*openSlot;
     realClose = (void *)*closeSlot;
@@ -517,6 +665,9 @@ __declspec(dllexport) DWORD WINAPI InitializeQSouls(void *unused)
     if (!replaceImport(openSlot, (void *)openMovie) ||
         !replaceImport(closeSlot, (void *)closeMovie) ||
         !replaceImport(categorySlot, (void *)getCategory) ||
+        !replaceImport(initSlot, (void *)initEvents) ||
+        !replaceImport(updateSlot, (void *)updateEvents) ||
+        !replaceImport(driverSlot, (void *)setDriver) ||
         !replaceImport(releaseSlot, (void *)releaseEvents)) return ERROR_WRITE_FAULT;
     DWORD introError = skipIntro();
     if (introError) {
