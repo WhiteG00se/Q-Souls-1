@@ -26,59 +26,56 @@ public static class RespecAssetChecks
     }
     public static void Run(string game)
     {
-        int count, secondCount; var files = RespecAssets.Generate(game, out count); var second = RespecAssets.Generate(game, out secondCount);
-        Check(count == 75 && secondCount == count && files.Count == 31, "All installed bonfire scripts and language archives must be covered.");
-        int bonfires = 0, dlc = 0, languages = 0;
+        int count, repeatedCount;
+        var files = RespecAssets.Generate(game, out count); var repeated = RespecAssets.Generate(game, out repeatedCount);
+        Check(count == 75 && repeatedCount == count && files.Count == 31, "All bonfire scripts and language archives covered.");
+        int bonfires = 0, tutorial = 0, dlc = 0, languages = 0;
         foreach (var pair in files) {
-            Check(Equal(pair.Value, second[pair.Key]), "Repeat generation must be deterministic.");
-            var before = new RespecAssets.Binder(File.ReadAllBytes(Path.Combine(game, pair.Key))); var after = new RespecAssets.Binder(pair.Value);
+            Check(Equal(pair.Value, repeated[pair.Key]), "Repeat generation deterministic.");
+            var before = new RespecAssets.Binder(File.ReadAllBytes(Path.Combine(game, pair.Key)));
+            var after = new RespecAssets.Binder(pair.Value);
             Check(before.Entries.Count == after.Entries.Count, "Binder entry count preserved.");
             for (int i = 0; i < before.Entries.Count; i++) {
-                var a = before.Entries[i]; var b = after.Entries[i]; Check(a.Name == b.Name && a.Id == b.Id && a.Flags == b.Flags, "Binder metadata preserved.");
+                var a = before.Entries[i]; var b = after.Entries[i];
+                Check(a.Name == b.Name && a.Id == b.Id && a.Flags == b.Flags, "Binder metadata preserved.");
                 if (Equal(a.Bytes, b.Bytes)) continue;
                 if (pair.Key.StartsWith("msg\\", StringComparison.Ordinal)) {
-                    Check(a.Name.EndsWith("\\Event_text_.fmg"), "Only event text FMGs changed."); var oldText = Texts(a.Bytes); var newText = Texts(b.Bytes);
-                    Check(newText.Count == oldText.Count + 1 && newText[RespecAssets.TextId] == "Respec", "Exactly one Respec text entry added.");
-                    foreach (var text in oldText) Check(newText[text.Key] == text.Value, "Existing translations preserved."); continue;
+                    Check(a.Name.EndsWith("\\Event_text_.fmg"), "Only native bonfire label FMG changed.");
+                    var oldTexts = Texts(a.Bytes); var newTexts = Texts(b.Bytes);
+                    Check(newTexts.Count == oldTexts.Count + 1 && newTexts[RespecAssets.TextId] == RespecAssets.Title(pair.Key.Split('\\')[1]), "One localized combined bonfire label added.");
+                    foreach (var text in oldTexts) Check(newTexts[text.Key] == text.Value, "All native screen translations preserved.");
+                    continue;
                 }
-                var oldEsd = new RespecAssets.Esd(a.Bytes); var newEsd = new RespecAssets.Esd(b.Bytes);
-                foreach (var group in oldEsd.Groups) {
-                    var newer = newEsd.Groups[group.Key]; Check(newer.Count == group.Value.Count + 5, "Exactly five Respec states added.");
+                var original = new RespecAssets.Esd(a.Bytes); var patched = new RespecAssets.Esd(b.Bytes); int rows = 0;
+                Check(original.Groups.Count == patched.Groups.Count, "No custom state groups added.");
+                foreach (var group in original.Groups) {
+                    var updated = patched.Groups[group.Key]; Check(group.Value.Count == updated.Count, "No custom bridge/editor states added.");
                     foreach (var state in group.Value.Values) {
-                        var updated = newer[state.Id]; bool menu = false;
-                        foreach (var c in state.Enter) if (c.Bank == 1 && c.Id == 19 && N(c.Args[1]) == 15000100) menu = true;
-                        Check(updated.Exit.Count == state.Exit.Count && updated.While.Count == state.While.Count, "Original command counts preserved.");
-                        for (int j = 0; j < state.Exit.Count; j++) Check(Command(state.Exit[j]) == Command(updated.Exit[j]), "Original exit command preserved.");
-                        for (int j = 0; j < state.While.Count; j++) Check(Command(state.While[j]) == Command(updated.While[j]), "Original while command preserved.");
-                        Check(updated.Conditions.Count == state.Conditions.Count + (menu ? 1 : 0), "Only menu selection transition added.");
-                        for (int j = 0; j < state.Conditions.Count; j++) Check(Condition(state.Conditions[j]) == Condition(updated.Conditions[j]), "Original conditions preserved.");
-                        if (!menu) {
-                            Check(state.Enter.Count == updated.Enter.Count, "Unrelated state commands preserved.");
-                            for (int j = 0; j < state.Enter.Count; j++) Check(Command(state.Enter[j]) == Command(updated.Enter[j]), "Unrelated entry commands preserved.");
-                        } else {
-                            Check(updated.Enter.Count == state.Enter.Count + 4, "One menu row and three bridge resets added.");
-                            int levelUp = -1, respec = -1;
-                            for (int j = 0; j < updated.Enter.Count; j++) if (updated.Enter[j].Id == 19) { int text = N(updated.Enter[j].Args[1]); if (text == 15000100) levelUp = j; if (text == RespecAssets.TextId) respec = j; }
-                            Check(respec == levelUp + 1 && N(updated.Enter[respec].Args[0]) == RespecAssets.MenuIndex && N(updated.Enter[respec].Args[2]) == RespecAssets.Ready, "Respec appears directly after Level Up and requires runtime readiness.");
+                        var next = updated[state.Id];
+                        Check(state.Enter.Count == next.Enter.Count && state.Exit.Count == next.Exit.Count && state.While.Count == next.While.Count && state.Conditions.Count == next.Conditions.Count, "All native command and transition counts preserved.");
+                        for (int j = 0; j < state.Conditions.Count; j++) Check(Condition(state.Conditions[j]) == Condition(next.Conditions[j]), "Native screen opening, interruption, confirmation and saving transitions untouched.");
+                        for (int j = 0; j < state.Exit.Count; j++) Check(Command(state.Exit[j]) == Command(next.Exit[j]), "Native exit commands untouched.");
+                        for (int j = 0; j < state.While.Count; j++) Check(Command(state.While[j]) == Command(next.While[j]), "Native while commands untouched.");
+                        for (int j = 0; j < state.Enter.Count; j++) {
+                            var command = state.Enter[j]; var newer = next.Enter[j];
+                            if (command.Bank == 1 && command.Id == 19 && N(command.Args[1]) == 15000100) {
+                                Check(newer.Bank == 1 && newer.Id == 19 && newer.Args.Count == 3 && Equal(command.Args[0], newer.Args[0]) && N(newer.Args[1]) == RespecAssets.TextId && N(newer.Args[2]) == -1, "Same native menu slot, localized label and unconditional availability."); rows++;
+                            } else Check(Command(command) == Command(newer), "All other native commands untouched.");
                         }
                     }
-                    var wait = newer[RespecAssets.FirstState + 1]; int interruptions = 0;
-                    foreach (var c in group.Value[20].Conditions) if (c.Target != 4) { Check(Condition(c) == Condition(wait.Conditions[interruptions]), "Bonfire interruption condition copied."); interruptions++; }
-                    Check(interruptions > 0 && wait.Exit[0].Id == 11 && N(wait.Exit[0].Args[0]) == RespecAssets.Request && N(wait.Exit[0].Args[1]) == 0, "Interruption clears request.");
-                    var finish = newer[RespecAssets.FirstState + 2]; Check(finish.Conditions[0].Target == RespecAssets.FirstState + 4, "Only committed draft enters save state.");
-                    Check(newer[RespecAssets.FirstState + 4].Enter[0].Id == 50, "Save uses normal RequestSave.");
                 }
-                bonfires++; if (pair.Key.Contains("m12_01")) dlc++;
+                Check(rows == 1, "Exactly one native Level Up row replaced per bonfire.");
+                bonfires += rows; if (pair.Key.Contains("m18_01")) tutorial += rows; if (pair.Key.Contains("m12_01")) dlc += rows;
             }
             if (pair.Key.StartsWith("msg\\", StringComparison.Ordinal)) languages++;
         }
-        Check(bonfires == count && dlc == 5 && languages == 13, "Bonfire/DLC/language coverage.");
-        // Patching already patched data must fail safely rather than duplicate entries.
+        Check(bonfires == count && tutorial == 2 && dlc == 5 && languages == 13, "Both tutorial bonfires, DLC and all languages covered.");
         foreach (var pair in files) if (pair.Key.StartsWith("script\\", StringComparison.Ordinal)) {
             bool rejected = false; try { RespecAssets.PatchTalk(new RespecAssets.Binder(pair.Value)); } catch (InvalidDataException) { rejected = true; }
-            Check(rejected, "Existing state/menu identifiers must reject collisions."); break;
+            Check(rejected, "Already-patched scripts reject duplicate edits."); break;
         }
-        bool invalid = false; try { new RespecAssets.Esd(new byte[200]); } catch (InvalidDataException) { invalid = true; } Check(invalid, "Malformed ESD rejected.");
-        Console.WriteLine("PASS: 75 bonfire scripts (including 5 DLC), 13 languages, existing content preserved, state transitions, normal save request, round trips, repeat generation and identifier collisions.");
+        bool invalid = false; try { new RespecAssets.Esd(new byte[200]); } catch (InvalidDataException) { invalid = true; }
+        Check(invalid, "Malformed ESD rejected.");
+        Console.WriteLine("PASS: native Level Up transitions and save flow unchanged; 75 bonfires including both tutorial bonfires and 5 DLC; 13 localized labels; deterministic generation and safe collisions.");
     }
 }

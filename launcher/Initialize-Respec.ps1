@@ -5,7 +5,7 @@ function Initialize-Respec {
         Add-Type -Path @((Join-Path $PSScriptRoot 'StartingClasses.cs'), (Join-Path $PSScriptRoot 'RespecAssets.cs'))
     }
     $bonfires = 0
-    $files = [RespecAssets]::Generate($GamePath, [ref]$bonfires)
+    $files = [RespecAssets]::Generate($GamePath, [ref]$bonfires, (Join-Path $PSScriptRoot '..\assets\text\RespecLocales.inc'))
     Write-Host "Respec: $bonfires bonfire scripts validated."
     if ($ValidateOnly) { return }
     $root = [IO.Path]::GetFullPath((Join-Path $Repository '.local\respec')).TrimEnd('\')

@@ -3,17 +3,19 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <limits.h>
 
 enum { RESPEC_STATS = 8, RESPEC_MIN = 10, RESPEC_MAX = 99 };
-enum { RESPEC_REQUEST = 70000980, RESPEC_DONE, RESPEC_COMMITTED, RESPEC_READY };
 typedef struct {
     int original[RESPEC_STATS], values[RESPEC_STATS];
     int level, selected, freePoints;
+    int purchased, souls, cost;
+    int (*price)(int);
 } RespecDraft;
 
 static inline int respecBegin(RespecDraft *draft, const int *base, int level)
 {
-    if (level < 1) return 0;
+    if (level < 1 || level > 713) return 0;
     for (int i = 0; i < RESPEC_STATS; ++i)
         if (base[i] < RESPEC_MIN || base[i] > RESPEC_MAX) return 0;
     memset(draft, 0, sizeof(*draft));
@@ -29,12 +31,21 @@ static inline void respecMove(RespecDraft *draft, int direction)
 static inline int respecAdjust(RespecDraft *draft, int direction)
 {
     int *value = &draft->values[draft->selected];
-    if (direction < 0 && *value > RESPEC_MIN) { --*value; ++draft->freePoints; return 1; }
-    if (direction > 0 && draft->freePoints > 0 && *value < RESPEC_MAX) {
-        ++*value; --draft->freePoints; return 1;
+    if ((direction < 0 && *value <= RESPEC_MIN) || (direction > 0 && *value >= RESPEC_MAX)) return 0;
+    int delta = direction < 0 ? -1 : 1;
+    int net = draft->purchased - draft->freePoints + delta;
+    int purchased = net > 0 ? net : 0, cost = 0;
+    if (draft->level > 713 - purchased) return 0;
+    for (int i = 1; i <= purchased; ++i) {
+        int price = draft->price ? draft->price(draft->level + i) : 0;
+        if (price <= 0 || cost > INT_MAX - price) return 0;
+        cost += price;
     }
-    return 0;
+    if (cost > draft->souls) return 0;
+    *value += delta; draft->purchased = purchased; draft->freePoints = net < 0 ? -net : 0; draft->cost = cost;
+    return 1;
 }
+
 static inline int respecCanCommit(const RespecDraft *draft, const int *base, int level)
 {
     int sum = 0;
@@ -43,21 +54,13 @@ static inline int respecCanCommit(const RespecDraft *draft, const int *base, int
         if (draft->values[i] < RESPEC_MIN || draft->values[i] > RESPEC_MAX) return 0;
         sum += draft->values[i] - draft->original[i];
     }
-    return sum == 0;
-}
-static inline void respecText(const RespecDraft *draft, const char *message, char *text, size_t size)
-{
-    static const char *names[] = {"Vitality", "Attunement", "Endurance", "Strength", "Dexterity", "Resistance", "Intelligence", "Faith"};
-    size_t used = 0;
-    int count = snprintf(text, size, "Respec\n\n");
-    if (count < 0 || (size_t)count >= size) return;
-    used = (size_t)count;
-    for (int i = 0; i < RESPEC_STATS; ++i) {
-        count = snprintf(text + used, size - used, i == draft->selected ? "%s < %d >\n" : "%s %d\n", names[i], draft->values[i]);
-        if (count < 0 || (size_t)count >= size - used) return;
-        used += (size_t)count;
+    if (sum != draft->purchased || draft->purchased < 0 || level > 713 - draft->purchased) return 0;
+    int cost = 0;
+    for (int i = 1; i <= draft->purchased; ++i) {
+        int price = draft->price ? draft->price(level + i) : 0;
+        if (price <= 0 || cost > INT_MAX - price) return 0;
+        cost += price;
     }
-    snprintf(text + used, size - used, "\nSoul Level: %d\nFree Points: %d\n\n%s", draft->level, draft->freePoints,
-             message && *message ? message : "Arrows / D-pad: adjust    Back: apply and return");
+    return cost == draft->cost && cost <= draft->souls;
 }
 #endif

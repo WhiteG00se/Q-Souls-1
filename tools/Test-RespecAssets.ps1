@@ -26,16 +26,5 @@ New-Item -ItemType Junction -Path (Join-Path $unsafe '.local\respec') -Target $G
 $rejected = $false
 try { Initialize-Respec -GamePath $GamePath -Repository $unsafe } catch { $rejected = $true }
 if (-not $rejected) { throw 'Linked output destination accepted.' }
-# A minimal installed-source fixture exercises event-flag collision detection.
-$collision = Join-Path $temporary 'collision-game'
-foreach ($folder in @('event','script\talk','msg\ENGLISH')) { New-Item -ItemType Directory -Path (Join-Path $collision $folder) -Force | Out-Null }
-$talkSource = Join-Path $GamePath 'script\talk\m10_00_00_00.talkesdbnd.dcx'
-Copy-Item -LiteralPath $talkSource -Destination (Join-Path $collision 'script\talk\m10_00_00_00.talkesdbnd.dcx')
-Copy-Item -LiteralPath (Join-Path $GamePath 'msg\ENGLISH\menu.msgbnd.dcx') -Destination (Join-Path $collision 'msg\ENGLISH\menu.msgbnd.dcx')
-$packed = [StartingClasses]::Pack([IO.File]::ReadAllBytes($talkSource), [BitConverter]::GetBytes([int][RespecAssets]::Ready))
-[IO.File]::WriteAllBytes((Join-Path $collision 'event\collision.emevd.dcx'), $packed)
-$rejected = $false; $count = 0
-try { [void][RespecAssets]::Generate($collision, [ref]$count) } catch { $rejected = $_.Exception.Message -match 'event flag collision' }
-if (-not $rejected) { throw 'Occupied event flag accepted.' }
 foreach ($file in $originals) { if ($hashes[$file.FullName] -cne (Get-FileHash -LiteralPath $file.FullName).Hash) { throw "Installed file changed: $($file.FullName)" } }
-Write-Output "PASS: validate-only, external generation, repeat launch, manifest, junction refusal, event-flag collision and unchanged installed game files. Artifacts: $temporary"
+Write-Output "PASS: validate-only, external generation, repeat launch, manifest, junction refusal and unchanged installed game files. Artifacts: $temporary"

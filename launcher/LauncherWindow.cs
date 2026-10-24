@@ -215,7 +215,7 @@ public sealed class LauncherWindow : Form
         headingRow.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         headingRow.Controls.Add(new VersionLabel { Text = "Q SOULS 1", FullAccent = true, AutoSize = true,
             Anchor = AnchorStyles.Left, Margin = new Padding(3, 0, 3, 0) }, 0, 0);
-        headingRow.Controls.Add(new Label { Text = "for DARK SOULS: REMASTERED (English only)", AutoSize = true,
+        headingRow.Controls.Add(new Label { Text = "for DARK SOULS: REMASTERED", AutoSize = true,
             Anchor = AnchorStyles.Right, Margin = new Padding(12, 0, 3, 0) }, 1, 0);
         versionGroup.Controls.Add(headingRow);
         string version = File.Exists(Path.Combine(root, "VERSION.txt")) ? File.ReadAllText(Path.Combine(root, "VERSION.txt")).Trim() : null;

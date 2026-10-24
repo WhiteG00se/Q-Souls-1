@@ -1,7 +1,6 @@
 // Isolated software rendering in a hidden test window; never loads the game.
 #include "../runtime/TitleOverlay.cpp"
 #include <math.h>
-#include "../runtime/RespecModel.h"
 #define CHECK(ok, message) do { if (!(ok)) { fprintf(stderr, "FAIL: %s (line %d)\n", message, __LINE__); return 1; } } while (0)
 
 static BOOL visible = TRUE;
@@ -9,13 +8,6 @@ static BOOL testVisible() { return visible; }
 static void testLog(const char *message) { fprintf(stderr, "%s\n", message); }
 static unsigned presents;
 static UINT lastInterval, lastFlags;
-static bool panelVisible;
-static RespecDraft panelDraft;
-static unsigned frameReports;
-static BOOL lastFrameOK;
-static BOOL panelSnapshot(char *text, size_t size) { if (panelVisible) respecText(&panelDraft, nullptr, text, size); return panelVisible; }
-static void panelFrame(HWND, BOOL ok) { ++frameReports; lastFrameOK = ok; }
-static HRESULT STDMETHODCALLTYPE failBuffer(IDXGISwapChain *, UINT, REFIID, void **) { return E_FAIL; }
 static HRESULT STDMETHODCALLTYPE testPresent(IDXGISwapChain *, UINT interval, UINT flags)
 {
     ++presents; lastInterval = interval; lastFlags = flags; return S_OK;
@@ -252,30 +244,12 @@ int wmain(int argc, wchar_t **argv)
     }
     renderer.reset();
     CHECK(SUCCEEDED(renderer.draw(chain.p)), "recreate renderer after device reset");
-    const int stats[] = {11,10,10,10,10,10,10,11};
-    CHECK(respecBegin(&panelDraft, stats, 1), "prepare Respec rendering fixture");
-    panelVisible = true;
-    setRespecOverlayCallbacks(panelSnapshot, panelFrame);
-    CHECK(SUCCEEDED(clear(chain.p, device.p, context.p)) && SUCCEEDED(testFrame(chain.p, 0, 0)) && frameReports && lastFrameOK, "Respec panel renders and reports health");
-    Pixels panel;
-    wchar_t panelPath[MAX_PATH]; swprintf(panelPath, MAX_PATH, L"%ls\\respec-panel.bmp", argv[2]);
-    CHECK(SUCCEEDED(pixels(chain.p, device.p, context.p, &panel, panelPath)) && panel.count > 2000 && panel.minX > 400 && panel.maxX < 1600, "Respec panel is visible and centered");
-    respecMove(&panelDraft, -1); respecAdjust(&panelDraft, -1);
-    CHECK(SUCCEEDED(testFrame(chain.p, 0, 0)) && strstr(renderer.cachedText, "Faith < 10 >") && strstr(renderer.cachedText, "Free Points: 1"), "panel refreshes cursor and values");
-    void **chainTable = *(void ***)chain.p; void *getBuffer = chainTable[9];
-    DWORD bufferProtection, restoredProtection;
-    CHECK(VirtualProtect(chainTable + 9, sizeof(void *), PAGE_READWRITE, &bufferProtection), "protect standalone failure fixture dispatch slot");
-    chainTable[9] = (void *)failBuffer;
-    CHECK(SUCCEEDED(testFrame(chain.p, 0, 0)) && !lastFrameOK, "renderer failure reports unavailable without breaking presentation");
-    chainTable[9] = getBuffer;
-    CHECK(VirtualProtect(chainTable + 9, sizeof(void *), bufferProtection, &restoredProtection), "restore failure fixture protection");
-    setRespecOverlayCallbacks(nullptr, nullptr);
     CHECK(*(void ***)chain.p == nativeTable && nativeTable[8] == nativePresent, "all native graphics dispatch remains unchanged");
     renderer.reset();
     chain.reset(); DestroyWindow(window);
     wchar_t fixturePath[MAX_PATH];
     swprintf(fixturePath, MAX_PATH, L"%ls\\VERSION.txt", argv[2]);
     DeleteFileW(fixturePath);
-    puts("PASS: independent title/Respec rendering, original pixel placement, unchanged native dispatch, state restoration, resizing and recreation.");
+    puts("PASS: independent title rendering, original pixel placement, unchanged native dispatch, state restoration, resizing and recreation.");
     return 0;
 }

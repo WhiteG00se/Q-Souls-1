@@ -1,27 +1,21 @@
 #pragma once
-#include <xinput.h>
 #include "RespecModel.h"
+#include "NativeCalls.h"
 
-// All editing/commit work runs on the game's window thread, via its message pump.
-// The presentation thread only reads a locked snapshot and reports render health.
-static uintptr_t respecDataGlobal, respecFlagsGlobal, respecWorldGlobal;
-static void (__stdcall *respecNativeCommit)(void *, const int *);
+// Only native Level Up call sites are changed. No rendering or input hooks.
+static uintptr_t respecDataGlobal, respecWorldGlobal;
+static void (*respecNativeCommit)(void *, const int *);
+static int (*respecNativePrice)(int);
+static void (*respecOriginalAdjust)(void *, unsigned char);
+static void (*respecOriginalArrows)(void *, unsigned char *, unsigned char *);
+static unsigned char (*respecOriginalChanged)(void *);
+static void (*respecOriginalReset)(void *);
+static unsigned char (*respecIsLevelUp)(void);
+static int (*respecRegister)(int);
+static void (*respecSound)(int);
 static BOOL (*respecIsLoaded)(void);
-static SRWLOCK respecLock = SRWLOCK_INIT;
-static RespecDraft respecDraft;
-static BOOL respecEditing, respecInvalid;
-static volatile LONG respecCapturing;
-static HWND respecWindow;
-static ULONGLONG respecLastFrame, respecCaptureUntil;
-static BOOL respecRenderOK;
-static uintptr_t respecOwner, respecCharacter, respecLastOwner, respecLastCharacter, respecLastFlags;
-static BYTE respecIdentity[48];
-static char respecMessage[160];
-static BOOL (WINAPI *respecRealPeek)(LPMSG, HWND, UINT, UINT, UINT);
-static SHORT (WINAPI *respecRealKey)(int);
-static BOOL (WINAPI *respecRealKeys)(PBYTE);
-static DWORD (WINAPI *respecRealXInput)(DWORD, XINPUT_STATE *);
-static HRESULT (WINAPI *respecRealDInput)(HINSTANCE, DWORD, const GUID *, void **, void *);
+static NativeCalls respecHooks[5];
+static struct { void *context; uintptr_t owner, character; BYTE identity[48]; BOOL valid; } respecSession;
 
 static BOOL respecRead(uintptr_t address, void *output, size_t size)
 {
@@ -71,286 +65,163 @@ static DWORD respecResolve(BYTE *image)
     const char commitMask[] = "xxxxxxxxxxxxx????xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
     _Static_assert(sizeof(commitMask) == sizeof(commit) + 1, "Respec commit mask");
     const BYTE tail[] = {0x80,0x8e,0x49,0x09,0,0,0x08,0x48,0x8b,0xce,0xe8};
-    const BYTE flags[] = {0x48,0x8b,0x0d,0,0,0,0,0x99,0x33,0xc2,0x45,0x33,0xc0,0x2b,0xc2,0x8d,0x50,0xf6};
-    const char flagsMask[] = "xxx????xxxxxxxxxxx";
-    _Static_assert(sizeof(flagsMask) == sizeof(flags) + 1, "Respec flags mask");
     BYTE *native = respecFind(image, commit, commitMask, sizeof(commit));
-    BYTE *flagRef = respecFind(image, flags, flagsMask, sizeof(flags));
-    if (!native || !flagRef || memcmp(native + 0x1c2, tail, sizeof(tail)) ||
+    if (!native || memcmp(native + 0x1c2, tail, sizeof(tail)) ||
         memcmp(native + 0xdb, "\x48\x8b\x05", 3) || memcmp(native + 0x1ee, "\x48\x8b\x74\x24\x48\x48\x83\xc4\x20\x5f\xc3", 11)) return ERROR_REVISION_MISMATCH;
+    // Native cost wrapper called by Level Up: ECX is the destination level.
+    const BYTE priceSignature[] = {0x40,0x53,0x48,0x83,0xec,0x50,0x8b,0xd9,0x81,0xf9,0x90,0x01,0,0,0x0f,0x8e,0x0c,0x02,0,0,0x81,0xf9,0xbc,0x02,0,0,0x7c,0x5d};
+    BYTE *price = respecFind(image, priceSignature, "xxxxxxxxxxxxxxxxxxxxxxxxxxxx", sizeof(priceSignature));
+    const BYTE costCall[] = {0x48,0x89,0x5c,0x24,0x08,0x48,0x89,0x6c,0x24,0x10,0x48,0x89,0x74,0x24,0x18,0x57,0x48,0x83,0xec,0x20,0x48,0x8b,0xd9,0x41,0x8b,0xf8,0x8b,0xca,0x8b,0xea,0xe8};
+    BYTE *wrapper = respecFind(image, costCall, "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", sizeof(costCall));
+    int32_t displacement = 0; if (wrapper) memcpy(&displacement, wrapper + 31, 4);
+    if (!price || !wrapper || wrapper + 35 + displacement != price || price[0x2f4] != 0xc3) return ERROR_REVISION_MISMATCH;
+    respecNativePrice = (void *)price;
     respecDataGlobal = respecRelative(native + 10); respecWorldGlobal = respecRelative(native + 0xdb);
-    respecFlagsGlobal = respecRelative(flagRef); respecNativeCommit = (void *)native;
+    respecNativeCommit = (void *)native;
+    const BYTE adjust[] = {0x40,0x53,0x56,0x57,0x48,0x83,0xec,0x20,0x48,0x8b,0xd9,0x0f,0xb6,0xf2,0xb9,0x55,0,0,0,0xe8};
+    const BYTE arrows[] = {0x48,0x89,0x5c,0x24,0x20,0x55,0x56,0x57,0x48,0x83,0xec,0x20,0x48,0x8b,0xd9,0x49,0x8b,0xf8,0xb9,0x55,0,0,0,0x48,0x8b,0xf2,0xe8};
+    const BYTE changed[] = {0x8b,0x81,0x4c,0x02,0,0,0x48,0x8b,0xd1,0x39,0x81,0x70,0x02,0,0,0x7f,0x65};
+    const BYTE reset[] = {0x40,0x55,0x56,0x48,0x83,0xec,0x28,0x48,0x8b,0x05,0,0,0,0,0x48,0x8b,0xe9,0x48,0x8b,0x70,0x10,0x48,0x85,0xf6};
+    BYTE *adjustCode = respecFind(image, adjust, "xxxxxxxxxxxxxxxxxxxx", sizeof(adjust));
+    BYTE *arrowCode = respecFind(image, arrows, "xxxxxxxxxxxxxxxxxxxxxxxxxxx", sizeof(arrows));
+    BYTE *changedCode = respecFind(image, changed, "xxxxxxxxxxxxxxxxx", sizeof(changed));
+    BYTE *resetCode = respecFind(image, reset, "xxxxxxxxxx????xxxxxxxxxx", sizeof(reset));
+    if (!adjustCode || !arrowCode || !changedCode || !resetCode ||
+        adjustCode[0x38] != 0xe8 || adjustCode[0x1f4] != 0xe8 || resetCode[0x12a] != 0xc3 ||
+        respecRelative(resetCode + 7) != respecDataGlobal) return ERROR_REVISION_MISMATCH;
+    respecOriginalAdjust = (void *)adjustCode; respecOriginalArrows = (void *)arrowCode;
+    respecOriginalChanged = (void *)changedCode; respecOriginalReset = (void *)resetCode;
+    int32_t relative;
+    memcpy(&relative, adjustCode + 0x14, 4); respecRegister = (void *)(adjustCode + 0x18 + relative);
+    memcpy(&relative, adjustCode + 0x39, 4); respecIsLevelUp = (void *)(adjustCode + 0x3d + relative);
+    memcpy(&relative, adjustCode + 0x1f5, 4); respecSound = (void *)(adjustCode + 0x1f9 + relative);
     return ERROR_SUCCESS;
 }
-static volatile LONG *respecFlagWord(void)
-{
-    uintptr_t flags = respecPointer(respecPointer(respecFlagsGlobal));
-    uintptr_t address = flags ? flags + 0x11378 : 0; // group 7, area 000, word for 980..983
-    return address && respecWritable(address, sizeof(LONG)) ? (volatile LONG *)address : NULL;
-}
-static LONG respecFlagMask(int flag) { return (LONG)(0x80000000u >> (flag % 32)); }
-static BOOL respecFlag(volatile LONG *word, int flag) { return (InterlockedCompareExchange(word, 0, 0) & respecFlagMask(flag)) != 0; }
-static void respecSetFlag(volatile LONG *word, int flag, BOOL value)
-{
-    if (value) InterlockedOr(word, respecFlagMask(flag)); else InterlockedAnd(word, ~respecFlagMask(flag));
-}
+
 static BOOL respecBase(uintptr_t owner, int base[8], int *level)
 {
-    // PlayerGameData fields used by native Level Up, never the effective ChrIns stats.
     static const size_t offsets[] = {0x40,0x48,0x50,0x58,0x60,0x88,0x68,0x70};
     for (int i = 0; i < 8; ++i) if (!respecRead(owner + offsets[i], &base[i], 4)) return FALSE;
     return respecRead(owner + 0x90, level, 4);
 }
-static BOOL respecCapture(void)
+static void respecReset(void *context)
 {
-    return InterlockedCompareExchange(&respecCapturing, 0, 0) != 0;
+    respecOriginalReset(context);
+    respecSession.context = context;
+    respecSession.owner = respecPointer(respecPointer(respecDataGlobal) + 0x10);
+    respecSession.character = respecPointer(respecPointer(respecWorldGlobal) + 0x68);
+    respecSession.valid = respecSession.owner && respecSession.character &&
+        respecRead(respecSession.owner + 0xa0, respecSession.identity, sizeof(respecSession.identity));
 }
-static BOOL respecSnapshotText(char *text, size_t size)
+static BOOL respecDraftFromNative(void *context, RespecDraft *draft)
 {
-    AcquireSRWLockShared(&respecLock);
-    BOOL show = respecEditing;
-    if (show) respecText(&respecDraft, respecMessage, text, size);
-    ReleaseSRWLockShared(&respecLock);
-    return show;
-}
-static void respecPresented(HWND window, BOOL success)
-{
-    AcquireSRWLockExclusive(&respecLock);
-    respecWindow = window; respecLastFrame = GetTickCount64(); respecRenderOK = success;
-    ReleaseSRWLockExclusive(&respecLock);
-}
-static SHORT WINAPI respecKey(int key) { return respecCapture() && key != VK_F12 ? 0 : respecRealKey(key); }
-static BOOL WINAPI respecKeys(PBYTE keys)
-{
-    BOOL result = respecRealKeys(keys);
-    if (result && keys && respecCapture()) { BYTE f12 = keys[VK_F12]; memset(keys, 0, 256); keys[VK_F12] = f12; }
-    return result;
-}
-static DWORD WINAPI respecXInput(DWORD user, XINPUT_STATE *state)
-{
-    DWORD result = respecRealXInput(user, state);
-    if (!result && state && respecCapture()) memset(&state->Gamepad, 0, sizeof(state->Gamepad));
-    return result;
-}
-
-typedef struct { void **slot; void *original; } RespecInputHook;
-static RespecInputHook respecInputHooks[16]; static size_t respecInputHookCount;
-static volatile LONG respecInputOK = 1;
-static SRWLOCK respecInputLock = SRWLOCK_INIT;
-static BOOL respecHookInput(void **slot, void *replacement)
-{
-    AcquireSRWLockExclusive(&respecInputLock);
-    for (size_t i = 0; i < respecInputHookCount; ++i) if (respecInputHooks[i].slot == slot) { ReleaseSRWLockExclusive(&respecInputLock); return TRUE; }
-    BOOL result = respecInputHookCount < 16;
-    if (result) {
-        void *previous = *slot;
-        result = replaceImport(slot, replacement);
-        if (result) { respecInputHooks[respecInputHookCount].slot = slot; respecInputHooks[respecInputHookCount++].original = previous; }
+    int original[8], level, souls;
+    uintptr_t address = (uintptr_t)context;
+    if (!respecRead(address + 0x24c, original, sizeof(original)) || !respecRead(address + 0x298, &level, 4) ||
+        !respecRead(address + 0x2a0, &souls, 4) || souls < 0 || !respecBegin(draft, original, level) ||
+        !respecRead(address + 0x270, draft->values, sizeof(draft->values))) return FALSE;
+    draft->souls = souls; draft->price = respecNativePrice;
+    int net = 0;
+    for (int i = 0; i < 8; ++i) {
+        if (draft->values[i] < RESPEC_MIN || draft->values[i] > RESPEC_MAX) return FALSE;
+        net += draft->values[i] - original[i];
     }
-    ReleaseSRWLockExclusive(&respecInputLock); return result;
-}
-static void *respecInputOriginal(void *object, size_t index)
-{
-    void **slot = *(void ***)object + index; void *result = NULL;
-    AcquireSRWLockShared(&respecInputLock);
-    for (size_t i = 0; i < respecInputHookCount; ++i) if (respecInputHooks[i].slot == slot) { result = respecInputHooks[i].original; break; }
-    ReleaseSRWLockShared(&respecInputLock); return result;
-}
-static HRESULT __stdcall respecDeviceState(void *device, DWORD size, void *state)
-{
-    HRESULT (__stdcall *next)(void *, DWORD, void *) = (void *)respecInputOriginal(device, 9);
-    if (!next) return E_FAIL;
-    HRESULT result = next(device, size, state);
-    if (SUCCEEDED(result) && state && respecCapture()) {
-        BYTE f12 = size == 256 ? ((BYTE *)state)[0x58] : 0;
-        memset(state, 0, size); if (size == 256) ((BYTE *)state)[0x58] = f12;
+    draft->purchased = net > 0 ? net : 0; draft->freePoints = net < 0 ? -net : 0;
+    if (level > 713 - draft->purchased) return FALSE;
+    for (int i = 1; i <= draft->purchased; ++i) {
+        int price = draft->price(level + i);
+        if (price <= 0 || draft->cost > INT_MAX - price) return FALSE;
+        draft->cost += price;
     }
-    return result;
+    return draft->cost <= souls;
 }
-static HRESULT __stdcall respecDeviceData(void *device, DWORD size, void *data, DWORD *count, DWORD flags)
+static BOOL respecSourceUnchanged(void *context, const RespecDraft *draft)
 {
-    HRESULT (__stdcall *next)(void *, DWORD, void *, DWORD *, DWORD) = (void *)respecInputOriginal(device, 10);
-    if (!next) return E_FAIL;
-    HRESULT result = next(device, size, data, count, flags);
-    if (SUCCEEDED(result) && data && count && respecCapture()) {
-        DWORD keep = 0;
-        if (size >= 16 && size <= 64 && *count <= 4096) {
-            for (DWORD i = 0; i < *count; ++i) {
-                BYTE *event = (BYTE *)data + (size_t)i * size; DWORD offset;
-                memcpy(&offset, event, 4);
-                if (offset == 0x58) { memmove((BYTE *)data + (size_t)keep * size, event, size); ++keep; }
-            }
-        }
-        *count = keep;
-    }
-    return result;
-}
-static HRESULT __stdcall respecCreateDevice(void *input, const GUID *guid, void **device, void *outer)
-{
-    HRESULT (__stdcall *next)(void *, const GUID *, void **, void *) = (void *)respecInputOriginal(input, 3);
-    if (!next) return E_FAIL;
-    HRESULT result = next(input, guid, device, outer);
-    if (SUCCEEDED(result) && device && *device) {
-        if (!respecHookInput(*(void ***)*device + 9, (void *)respecDeviceState) ||
-            !respecHookInput(*(void ***)*device + 10, (void *)respecDeviceData)) { InterlockedExchange(&respecInputOK, 0); logMessage("Respec input capture could not be installed."); }
-    }
-    return result;
-}
-static HRESULT WINAPI respecCreateInput(HINSTANCE instance, DWORD version, const GUID *iid, void **input, void *outer)
-{
-    HRESULT result = respecRealDInput(instance, version, iid, input, outer);
-    if (SUCCEEDED(result) && input && *input && !respecHookInput(*(void ***)*input + 3, (void *)respecCreateDevice)) {
-        InterlockedExchange(&respecInputOK, 0); logMessage("Respec DirectInput capture could not be installed.");
-    }
-    return result;
-}
-static unsigned respecButtons(void)
-{
-    unsigned buttons = 0;
-    if (respecRealKey(VK_UP) & 0x8000) buttons |= 1;
-    if (respecRealKey(VK_DOWN) & 0x8000) buttons |= 2;
-    if (respecRealKey(VK_LEFT) & 0x8000) buttons |= 4;
-    if (respecRealKey(VK_RIGHT) & 0x8000) buttons |= 8;
-    if ((respecRealKey(VK_ESCAPE) | respecRealKey(VK_BACK) | respecRealKey('Q')) & 0x8000) buttons |= 16;
-    for (DWORD user = 0; user < 4; ++user) {
-        XINPUT_STATE state;
-        if (respecRealXInput(user, &state)) continue;
-        WORD b = state.Gamepad.wButtons;
-        if ((b & XINPUT_GAMEPAD_DPAD_UP) || state.Gamepad.sThumbLY > 20000) buttons |= 1;
-        if ((b & XINPUT_GAMEPAD_DPAD_DOWN) || state.Gamepad.sThumbLY < -20000) buttons |= 2;
-        if ((b & XINPUT_GAMEPAD_DPAD_LEFT) || state.Gamepad.sThumbLX < -20000) buttons |= 4;
-        if ((b & XINPUT_GAMEPAD_DPAD_RIGHT) || state.Gamepad.sThumbLX > 20000) buttons |= 8;
-        if (b & XINPUT_GAMEPAD_B) buttons |= 16;
-    }
-    return buttons;
-}
-static void respecEnd(ULONGLONG now)
-{
-    respecEditing = FALSE; respecInvalid = FALSE; respecCaptureUntil = now + 150;
-}
-static BOOL respecApply(uintptr_t owner, uintptr_t character)
-{
-    int base[8], level, souls, humanity, otherHumanity;
-    BYTE identity[sizeof(respecIdentity)];
-    if (owner != respecOwner || character != respecCharacter || !respecBase(owner, base, &level) ||
-        !respecRead(owner + 0xa0, identity, sizeof(identity)) || memcmp(identity, respecIdentity, sizeof(identity)) ||
-        !respecCanCommit(&respecDraft, base, level) || !respecRead(owner + 0x94, &souls, 4) ||
-        !respecRead(owner + 0x84, &humanity, 4) || !respecRead(owner + 0x80, &otherHumanity, 4) ||
-        !respecWritable(owner, 0xd0)) return FALSE;
-    if (!memcmp(base, respecDraft.values, sizeof(base))) return TRUE;
-    // Native Level Up consumes a small context and nine stats. A zero cost and
-    // unchanged level preserve currency; the normal routine refreshes HP/stamina,
-    // attunement, equipment requirements and derived defenses after assignment.
-    BYTE context[0x2a8] = {0}; int values[9];
-    memcpy(context + 0x294, &level, 4); memcpy(context + 0x2a0, &souls, 4);
-    memcpy(values, respecDraft.values, sizeof(base)); values[8] = humanity;
-    respecNativeCommit(context, values);
-    memcpy((void *)(owner + 0x80), &otherHumanity, 4);
-    logMessage("Respec applied through native Level Up; Soul Level and souls preserved.");
-    return TRUE;
-}
-static void respecTick(void)
-{
-    static ULONGLONG lastTick, repeatAt; static unsigned previousButtons;
-    ULONGLONG now = GetTickCount64();
-    if (now - lastTick < 10) return;
-    AcquireSRWLockExclusive(&respecLock);
-    if (!respecWindow || GetWindowThreadProcessId(respecWindow, NULL) != GetCurrentThreadId()) { ReleaseSRWLockExclusive(&respecLock); return; }
-    lastTick = now;
-    volatile LONG *word = respecFlagWord();
     uintptr_t owner = respecPointer(respecPointer(respecDataGlobal) + 0x10);
     uintptr_t character = respecPointer(respecPointer(respecWorldGlobal) + 0x68);
-    int hp = 0;
-    BOOL alive = owner && character && (!respecIsLoaded || respecIsLoaded()) && respecRead(character + 0x3e8, &hp, 4) && hp > 0;
-    BOOL rendering = respecRenderOK && now - respecLastFrame < 3000 && InterlockedCompareExchange(&respecInputOK, 0, 0);
-    if (word && ((uintptr_t)word != respecLastFlags || owner != respecLastOwner || character != respecLastCharacter)) {
-        respecSetFlag(word, RESPEC_REQUEST, FALSE); respecSetFlag(word, RESPEC_DONE, FALSE); respecSetFlag(word, RESPEC_COMMITTED, FALSE);
-        respecLastFlags = (uintptr_t)word; respecLastOwner = owner; respecLastCharacter = character;
-        if (respecEditing) respecEnd(now);
-    }
-    if (word) respecSetFlag(word, RESPEC_READY, rendering && alive);
-    BOOL request = word && respecFlag(word, RESPEC_REQUEST);
-    if (respecEditing && (!request || !alive || owner != respecOwner || character != respecCharacter ||
-        (!rendering && GetForegroundWindow() == respecWindow))) {
-        respecEnd(now);
-        if (word && request) { respecSetFlag(word, RESPEC_COMMITTED, FALSE); respecSetFlag(word, RESPEC_DONE, TRUE); }
-    }
-    if (!respecEditing && request && !respecFlag(word, RESPEC_DONE) && alive && rendering) {
-        int base[8], level;
-        if (respecBase(owner, base, &level) && respecRead(owner + 0xa0, respecIdentity, sizeof(respecIdentity))) {
-            respecInvalid = !respecBegin(&respecDraft, base, level);
-            if (respecInvalid) { memset(&respecDraft, 0, sizeof(respecDraft)); memcpy(respecDraft.values, base, sizeof(base)); respecDraft.level = level; }
-            snprintf(respecMessage, sizeof(respecMessage), "%s", respecInvalid ? "Respec requires base stats between 10 and 99. Press Back to return." : "");
-            respecOwner = owner; respecCharacter = character; respecEditing = TRUE;
-            previousButtons = respecButtons(); repeatAt = now + 350;
-        } else { respecSetFlag(word, RESPEC_DONE, TRUE); }
-    }
-    if (respecEditing && GetForegroundWindow() == respecWindow) {
-        unsigned buttons = respecButtons(), pressed = buttons & ~previousButtons;
-        if ((buttons & 15) && now >= repeatAt) { pressed |= buttons & 15; repeatAt = now + 100; }
-        if (buttons != previousButtons) repeatAt = now + 350;
-        if (!respecInvalid) {
-            if ((pressed & 3) == 1) respecMove(&respecDraft, -1);
-            if ((pressed & 3) == 2) respecMove(&respecDraft, 1);
-            if ((pressed & 12) == 4) { respecAdjust(&respecDraft, -1); respecMessage[0] = 0; }
-            if ((pressed & 12) == 8) { respecAdjust(&respecDraft, 1); respecMessage[0] = 0; }
-        }
-        if (pressed & 16) {
-            if (respecInvalid) { respecSetFlag(word, RESPEC_DONE, TRUE); respecEnd(now); }
-            else if (respecDraft.freePoints) snprintf(respecMessage, sizeof(respecMessage), "Spend all Free Points before leaving.");
-            else {
-                BOOL applied = respecApply(owner, character);
-                respecSetFlag(word, RESPEC_COMMITTED, applied); respecSetFlag(word, RESPEC_DONE, TRUE); respecEnd(now);
-                if (!applied) logMessage("Respec draft discarded: the source character or base stats changed.");
-            }
-        }
-        previousButtons = buttons;
-    }
-    InterlockedExchange(&respecCapturing, respecEditing || now < respecCaptureUntil);
-    ReleaseSRWLockExclusive(&respecLock);
+    int base[8], level, souls, hp; BYTE identity[48];
+    return respecSession.valid && context == respecSession.context && owner == respecSession.owner &&
+        character == respecSession.character && (!respecIsLoaded || respecIsLoaded()) &&
+        respecRead(character + 0x3e8, &hp, 4) && hp > 0 && respecBase(owner, base, &level) &&
+        level == draft->level && !memcmp(base, draft->original, sizeof(base)) &&
+        respecRead(owner + 0x94, &souls, 4) && souls == draft->souls &&
+        respecRead(owner + 0xa0, identity, sizeof(identity)) && !memcmp(identity, respecSession.identity, sizeof(identity));
 }
-static BOOL WINAPI respecPeek(LPMSG message, HWND window, UINT min, UINT max, UINT remove)
+static BOOL respecLoadNative(void *context, RespecDraft *draft)
 {
-    respecTick();
-    BOOL result = respecRealPeek(message, window, min, max, remove);
-    if (result && message && respecCapture() &&
-        ((message->message >= WM_KEYFIRST && message->message <= WM_KEYLAST && message->wParam != VK_F12) ||
-         (message->message >= WM_MOUSEFIRST && message->message <= WM_MOUSELAST) || message->message == WM_INPUT)) {
-        // DefWindowProc must still release foreground raw-input packets.
-        if (message->message == WM_INPUT && (remove & PM_REMOVE)) DefWindowProcW(message->hwnd, message->message, message->wParam, message->lParam);
-        message->message = WM_NULL;
-    }
-    return result;
+    return respecDraftFromNative(context, draft) && respecSourceUnchanged(context, draft);
 }
-static void **respecXInputSlot(void)
+static void respecStoreNative(void *context, const RespecDraft *draft)
 {
-    BYTE *image = (BYTE *)GetModuleHandleW(NULL); IMAGE_DOS_HEADER *dos = (IMAGE_DOS_HEADER *)image;
-    IMAGE_NT_HEADERS64 *nt = (IMAGE_NT_HEADERS64 *)(image + dos->e_lfanew);
-    DWORD rva = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress;
-    if (!rva) return NULL;
-    IMAGE_IMPORT_DESCRIPTOR *desc = (IMAGE_IMPORT_DESCRIPTOR *)(image + rva);
-    for (; desc->Name; ++desc) {
-        if (_stricmp((char *)image + desc->Name, "xinput1_3.dll") || !desc->OriginalFirstThunk) continue;
-        IMAGE_THUNK_DATA64 *names = (IMAGE_THUNK_DATA64 *)(image + desc->OriginalFirstThunk), *slots = (IMAGE_THUNK_DATA64 *)(image + desc->FirstThunk);
-        for (; names->u1.AddressOfData; ++names, ++slots)
-            if (IMAGE_SNAP_BY_ORDINAL64(names->u1.Ordinal) && IMAGE_ORDINAL64(names->u1.Ordinal) == 2) return (void **)&slots->u1.Function;
+    BYTE *data = (BYTE *)context;
+    int target = draft->level + draft->purchased;
+    memcpy(data + 0x270, draft->values, sizeof(draft->values));
+    memcpy(data + 0x294, &target, 4); memcpy(data + 0x29c, &draft->cost, 4);
+}
+static void respecAdjustNative(void *context, unsigned char increase)
+{
+    if (!respecIsLevelUp()) { respecOriginalAdjust(context, increase); return; }
+    RespecDraft draft; int selected = respecRegister(0x55);
+    BOOL adjusted = FALSE;
+    if (selected >= 0 && selected < 8 && respecLoadNative(context, &draft) && respecWritable((uintptr_t)context, 0x2a4)) {
+        draft.selected = selected;
+        if (respecAdjust(&draft, increase ? 1 : -1)) { respecStoreNative(context, &draft); adjusted = TRUE; }
     }
-    return NULL;
+    respecSound(adjusted ? 0 : 200); // Existing native adjustment / rejection sounds.
+}
+static void respecArrowsNative(void *context, unsigned char *decrease, unsigned char *increase)
+{
+    if (!respecIsLevelUp()) { respecOriginalArrows(context, decrease, increase); return; }
+    *decrease = *increase = 0;
+    RespecDraft draft; int selected = respecRegister(0x55);
+    if (selected < 0 || selected >= 8 || !respecLoadNative(context, &draft)) return;
+    draft.selected = selected; RespecDraft copy = draft;
+    *decrease = (unsigned char)respecAdjust(&copy, -1);
+    copy = draft; *increase = (unsigned char)respecAdjust(&copy, 1);
+}
+static unsigned char respecChangedNative(void *context)
+{
+    if (!respecIsLevelUp()) return respecOriginalChanged(context);
+    RespecDraft draft;
+    return respecLoadNative(context, &draft) && !draft.freePoints &&
+        memcmp(draft.original, draft.values, sizeof(draft.values)) != 0;
+}
+static void respecCommitNative(void *context, const int *stats)
+{
+    if (!respecIsLevelUp()) { respecNativeCommit(context, stats); return; }
+    RespecDraft draft;
+    if (!respecLoadNative(context, &draft) || !respecCanCommit(&draft, draft.original, draft.level) ||
+        stats != (int *)((BYTE *)context + 0x270) || !respecWritable((uintptr_t)context, 0x2a4)) {
+        logMessage("Native Respec confirmation rejected: incomplete or changed character data."); return;
+    }
+    int humanity, otherHumanity;
+    if (!respecWritable(respecSession.owner, 0xd0) || !respecRead(respecSession.owner + 0x84, &humanity, 4) || !respecRead(respecSession.owner + 0x80, &otherHumanity, 4)) return;
+    // Recompute final cost, preserve both humanity fields, and let the native routine refresh all derived stats.
+    respecStoreNative(context, &draft); memcpy((BYTE *)context + 0x290, &humanity, 4);
+    respecNativeCommit(context, stats);
+    memcpy((void *)(respecSession.owner + 0x80), &otherHumanity, 4);
+    logMessage("Level Up & Respec committed through the native Level Up screen.");
 }
 static DWORD initializeRespec(BOOL (*loaded)(void))
 {
-    DWORD error = respecResolve((BYTE *)GetModuleHandleW(NULL));
-    if (error) return error;
+    BYTE *image = (BYTE *)GetModuleHandleW(NULL);
+    DWORD error = respecResolve(image); if (error) return error;
     respecIsLoaded = loaded;
-    void **peek = findImport("user32.dll", "PeekMessageW"), **key = findImport("user32.dll", "GetAsyncKeyState"),
-         **keys = findImport("user32.dll", "GetKeyboardState"), **input = findImport("dinput8.dll", "DirectInput8Create"), **pad = respecXInputSlot();
-    if (!peek || !key || !keys || !input || !pad) return ERROR_PROC_NOT_FOUND;
-    respecRealPeek = (void *)*peek; respecRealKey = (void *)*key; respecRealKeys = (void *)*keys;
-    respecRealDInput = (void *)*input; respecRealXInput = (void *)*pad;
-    if (!replaceImport(peek, (void *)respecPeek) || !replaceImport(key, (void *)respecKey) ||
-        !replaceImport(keys, (void *)respecKeys) || !replaceImport(input, (void *)respecCreateInput) ||
-        !replaceImport(pad, (void *)respecXInput)) return ERROR_WRITE_FAULT;
-    setRespecOverlayCallbacks(respecSnapshotText, respecPresented);
-    logMessage("Bonfire Respec ready; base-stat drafts commit through native Level Up.");
+    BYTE *targets[] = {(BYTE *)respecOriginalAdjust, (BYTE *)respecOriginalArrows, (BYTE *)respecOriginalChanged,
+        (BYTE *)respecNativeCommit, (BYTE *)respecOriginalReset};
+    void *callbacks[] = {(void *)respecAdjustNative, (void *)respecArrowsNative, (void *)respecChangedNative,
+        (void *)respecCommitNative, (void *)respecReset};
+    const unsigned counts[] = {3,1,3,2,5};
+    for (unsigned i = 0; i < 5; ++i) {
+        respecHooks[i].target = targets[i]; respecHooks[i].callback = callbacks[i];
+        error = nativePrepareCalls(image, &respecHooks[i], counts[i]); if (error) goto failed;
+    }
+    for (unsigned i = 0; i < 5; ++i) { error = nativeApplyCalls(&respecHooks[i]); if (error) goto failed; }
+    logMessage("Native Level Up extended with Respec; original controls, previews and save flow retained.");
     return ERROR_SUCCESS;
+failed:
+    for (unsigned i = 5; i > 0; --i) {
+        DWORD restore = nativeRestoreCalls(&respecHooks[i - 1]); if (restore) return restore;
+    }
+    return error;
 }

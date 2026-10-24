@@ -2,13 +2,13 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text;
+using System.Text.RegularExpressions;
 
 // DSR BND3, FMG v1 and 64-bit ESD layouts: JKAnderson/SoulsFormats.
-// This narrow implementation adds only our menu entry and bridge states.
+// Keep native bonfire behavior; replace only the Level Up label and its availability.
 public static class RespecAssets
 {
-    public const int Request = 70000980, Done = 70000981, Committed = 70000982, Ready = 70000983;
-    public const int TextId = 15000990, MenuIndex = 60, FirstState = 900000;
+    public const int TextId = 15000990;
     const int LevelUpText = 15000100, Data = 108;
     static void Need(bool ok, string error) { if (!ok) throw new InvalidDataException(error); }
     static void Bounds(byte[] b, long p, long n) { Need(p >= 0 && n >= 0 && p <= b.Length - n, "Invalid Respec asset bounds."); }
@@ -20,13 +20,6 @@ public static class RespecAssets
     static bool Same(byte[] a, byte[] b) { if (a.Length != b.Length) return false; for (int i = 0; i < a.Length; i++) if (a[i] != b[i]) return false; return true; }
     static byte[] Number(int value) { if (value >= -64 && value <= 63) return new byte[] { (byte)(value + 64), 0xa1 }; byte[] b = new byte[6]; b[0] = 0x82; Array.Copy(BitConverter.GetBytes(value), 0, b, 1, 4); b[5] = 0xa1; return b; }
     static int Integer(byte[] b) { if (b.Length == 2 && b[1] == 0xa1 && b[0] <= 0x7f) return b[0] - 64; Need(b.Length == 6 && b[0] == 0x82 && b[5] == 0xa1, "Expected constant bonfire menu argument."); return I(b, 1); }
-    static byte[] Test(int function, int? argument, int equals)
-    {
-        var bytes = new List<byte>(); byte[] f = Number(function); bytes.AddRange(Slice(f, 0, f.Length - 1));
-        if (argument.HasValue) { byte[] a = Number(argument.Value); bytes.AddRange(Slice(a, 0, a.Length - 1)); }
-        bytes.Add(argument.HasValue ? (byte)0x85 : (byte)0x84);
-        byte[] e = Number(equals); bytes.AddRange(Slice(e, 0, e.Length - 1)); bytes.Add(0x95); bytes.Add(0xa1); return bytes.ToArray();
-    }
     sealed class Output : IDisposable
     {
         public MemoryStream Stream = new MemoryStream(); public BinaryWriter W;
@@ -188,36 +181,19 @@ public static class RespecAssets
         int patched = 0;
         foreach (var entry in binder.Entries) {
             var esd = new Esd(entry.Bytes); bool changed = false;
-            foreach (var group in esd.Groups.Values) {
-                var targets = new List<State>();
-                foreach (var state in group.Values) foreach (var command in state.Enter)
-                    if (command.Bank == 1 && command.Id == 19 && command.Args.Count == 3 && Integer(command.Args[1]) == LevelUpText) targets.Add(state);
-                foreach (var menu in targets) {
-                    Need(targets.Count == 1 && group.ContainsKey(20), "Unsupported bonfire state layout.");
-                    for (int id = FirstState; id < FirstState + 5; id++) Need(!group.ContainsKey(id), "Respec ESD state collision.");
-                    int index = -1; foreach (var c in menu.Enter) if (c.Bank == 1 && c.Id == 19) { Need(Integer(c.Args[0]) != MenuIndex && Integer(c.Args[1]) != TextId, "Respec menu identifier collision."); if (Integer(c.Args[1]) == LevelUpText) index = menu.Enter.IndexOf(c); }
-                    Need(index >= 0, "Bonfire Level Up entry missing."); menu.Enter.Insert(index + 1, new Command(19, MenuIndex, TextId, Ready));
-                    menu.Conditions.Add(new Condition(FirstState, Test(23, null, MenuIndex)));
-                    var open = new State { Id = FirstState }; open.Enter.Add(new Command(67)); open.Enter.Add(new Command(11, Done, 0)); open.Enter.Add(new Command(11, Committed, 0)); open.Enter.Add(new Command(11, Request, 1)); open.Conditions.Add(new Condition(FirstState + 1, Number(1))); group.Add(open.Id, open);
-                    var wait = new State { Id = FirstState + 1 };
-                    // Keep the game's own bonfire death/range/network interruption rules.
-                    foreach (var c in group[20].Conditions) if (c.Target != menu.Id) wait.Conditions.Add(c);
-                    wait.Conditions.Add(new Condition(FirstState + 2, Test(15, Done, 1)));
-                    wait.Conditions.Add(new Condition(FirstState + 3, Test(15, Ready, 0)));
-                    wait.Exit.Add(new Command(11, Request, 0)); group.Add(wait.Id, wait);
-                    var finish = new State { Id = FirstState + 2 }; finish.Conditions.Add(new Condition(FirstState + 4, Test(15, Committed, 1))); finish.Conditions.Add(new Condition(FirstState + 3, Number(1))); group.Add(finish.Id, finish);
-                    var save = new State { Id = FirstState + 4 }; save.Enter.Add(new Command(50, 0)); save.Conditions.Add(new Condition(FirstState + 3, Number(1))); group.Add(save.Id, save);
-                    var back = new State { Id = FirstState + 3 }; back.Enter.Add(new Command(11, Request, 0)); back.Enter.Add(new Command(11, Done, 0)); back.Enter.Add(new Command(11, Committed, 0)); back.Conditions.Add(new Condition(menu.Id, Number(1))); group.Add(back.Id, back);
-                    // Reset stale bridge state whenever the normal bonfire menu is rebuilt.
-                    menu.Enter.Insert(0, new Command(11, Request, 0)); menu.Enter.Insert(1, new Command(11, Done, 0)); menu.Enter.Insert(2, new Command(11, Committed, 0));
-                    changed = true; patched++;
-                }
+            foreach (var group in esd.Groups.Values) foreach (var state in group.Values) foreach (var command in state.Enter) {
+                if (command.Bank != 1 || command.Id != 19 || command.Args.Count != 3) continue;
+                int text = Integer(command.Args[1]); Need(text != TextId, "Combined Level Up menu already patched.");
+                if (text != LevelUpText) continue;
+                command.Args[1] = Number(TextId);
+                command.Args[2] = Number(-1); // Includes both tutorial bonfires, before escaping the Asylum.
+                changed = true; patched++;
             }
-            if (changed) { byte[] output = esd.Write(); Need(Same(output, new Esd(output).Write()), "Respec ESD round-trip failed."); entry.Bytes = output; }
+            if (changed) { byte[] output = esd.Write(); Need(Same(output, new Esd(output).Write()), "Bonfire ESD round-trip failed."); entry.Bytes = output; }
         }
         return patched;
     }
-    public static byte[] PatchFmg(byte[] b)
+    public static byte[] PatchFmg(byte[] b, string title)
     {
         Bounds(b, 0, 28); Need(b[0] == 0 && b[1] == 0 && b[2] == 1 && b[3] == 0, "Unsupported Respec FMG.");
         int groups = Count(I(b, 12)), total = Count(I(b, 16)), offsets = I(b, 20); Bounds(b, 28, groups * 12); Bounds(b, offsets, total * 4);
@@ -230,7 +206,7 @@ public static class RespecAssets
                 texts.Add(id, text);
             }
         }
-        Need(!texts.ContainsKey(TextId), "Respec menu text identifier collision."); texts.Add(TextId, Encoding.Unicode.GetBytes("Respec\0"));
+        Need(!texts.ContainsKey(TextId), "Respec menu text identifier collision."); texts.Add(TextId, Encoding.Unicode.GetBytes(title + "\0"));
         using (var o = new Output()) {
             o.W.Write(Slice(b, 0, 28)); int n = 0, previous = -2, start = 0, firstId = 0, lastId = 0; var ranges = new List<int[]>();
             foreach (var pair in texts) { if (pair.Key != previous + 1 && n != 0) ranges.Add(new int[] { start, firstId, lastId }); if (pair.Key != previous + 1) { start = n; firstId = pair.Key; } lastId = pair.Key; previous = pair.Key; n++; }
@@ -241,25 +217,31 @@ public static class RespecAssets
             o.FixI(4, checked((int)o.Position)); return o.Bytes();
         }
     }
-    static void NoFlagCollision(byte[] b)
+    public static string Title(string language, string catalog = null)
     {
-        // Conservative scan of decompressed scripts, including EZL's int32 operands.
-        for (int p = 0; p <= b.Length - 4; p++) { int value = I(b, p); Need(value < Request || value > Ready, "Respec bridge event flag collision in installed scripts."); }
+        string source = catalog ?? Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "assets", "text", "RespecLocales.inc");
+        // Add-Type hosts live outside the repository; resolve relative to this invocation's repository.
+        if (!File.Exists(source)) source = Path.Combine(Directory.GetCurrentDirectory(), "assets", "text", "RespecLocales.inc");
+        foreach (string line in File.ReadAllLines(source, Encoding.UTF8)) {
+            if (!line.StartsWith("RESPEC_LOCALE(", StringComparison.Ordinal)) continue;
+            var strings = Regex.Matches(line, "\"([^\"]*)\"");
+            if (strings.Count == 2 && strings[0].Groups[1].Value.Equals(language, StringComparison.OrdinalIgnoreCase)) return strings[1].Groups[1].Value;
+        }
+        throw new InvalidDataException("Unsupported game language: " + language);
     }
-    public static Dictionary<string, byte[]> Generate(string game, out int bonfires)
+    public static Dictionary<string, byte[]> Generate(string game, out int bonfires, string catalog = null)
     {
         var output = new Dictionary<string, byte[]>(StringComparer.OrdinalIgnoreCase); bonfires = 0;
-        string talk = Path.Combine(game, "script", "talk"), events = Path.Combine(game, "event"), messages = Path.Combine(game, "msg");
-        Need(Directory.Exists(talk) && Directory.Exists(events) && Directory.Exists(messages), "Missing required game components: script/talk, event or msg. Install the game or provide the correct path.");
-        foreach (string file in Directory.GetFiles(events, "*.emevd*")) NoFlagCollision(StartingClasses.Unpack(File.ReadAllBytes(file)));
+        string talk = Path.Combine(game, "script", "talk"), messages = Path.Combine(game, "msg");
+        Need(Directory.Exists(talk) && Directory.Exists(messages), "Missing required game components: script/talk or msg. Install the game or provide the correct path.");
         foreach (string file in Directory.GetFiles(talk, "*.talkesdbnd.dcx")) {
-            var binder = new Binder(File.ReadAllBytes(file)); foreach (var entry in binder.Entries) NoFlagCollision(entry.Bytes);
+            var binder = new Binder(File.ReadAllBytes(file));
             int n = PatchTalk(binder); if (n > 0) output.Add("script\\talk\\" + Path.GetFileName(file), binder.Write()); bonfires += n;
         }
         Need(bonfires > 0, "No compatible bonfire scripts found.");
         foreach (string language in Directory.GetDirectories(messages)) {
             string file = Path.Combine(language, "menu.msgbnd.dcx"); Need(File.Exists(file), "Missing required game component: " + file); var binder = new Binder(File.ReadAllBytes(file)); int count = 0;
-            foreach (var entry in binder.Entries) if (entry.Name.EndsWith("\\Event_text_.fmg", StringComparison.OrdinalIgnoreCase)) { entry.Bytes = PatchFmg(entry.Bytes); count++; }
+            foreach (var entry in binder.Entries) if (entry.Name.EndsWith("\\Event_text_.fmg", StringComparison.OrdinalIgnoreCase)) { entry.Bytes = PatchFmg(entry.Bytes, Title(Path.GetFileName(language), catalog)); count++; }
             Need(count > 0, "Event menu text missing: " + file); output.Add("msg\\" + Path.GetFileName(language) + "\\menu.msgbnd.dcx", binder.Write());
         }
         return output;

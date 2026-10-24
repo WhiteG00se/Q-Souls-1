@@ -7,4 +7,5 @@
 Features:
 Startup intro is skipped
 All starting classes: SL 1, Vitality 12, every other stat 10
-Bonfire Respec: redistribute base stats; spend all Free Points before leaving
+Level Up & Respec at every bonfire, including the tutorial: use the original Level Up screen to redistribute stats for free or buy levels with souls.
+Uses the game's normal controls and translations in all 13 languages.

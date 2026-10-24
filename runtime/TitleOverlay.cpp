@@ -24,8 +24,6 @@ template<class T> struct Com {
 char label[64];
 BOOL (*isVisible)();
 void (*writeLog)(const char *);
-BOOL (*respecSnapshot)(char *, size_t);
-void (*respecFrame)(HWND, BOOL);
 
 
 decltype(&D3DCompile) compileShader;
@@ -157,8 +155,7 @@ struct Renderer {
     Com<ID3D11SamplerState> sampler;
     Com<ID3D11RasterizerState> raster;
     UINT fontHeight = 0, textWidth = 0, textHeight = 0;
-    char cachedText[1024] = {};
-    bool cachedPanel = false;
+    char cachedText[64] = {};
 
     void reset()
     {
@@ -214,7 +211,7 @@ struct Renderer {
         return current->CreateRasterizerState(&r, &raster.p);
     }
 
-    HRESULT makeText(UINT height, const char *content = label, bool panel = false)
+    HRESULT makeText(UINT height)
     {
         HDC dc = CreateCompatibleDC(nullptr);
         if (!dc) return E_FAIL;
@@ -224,9 +221,9 @@ struct Renderer {
         if (!font) { DeleteDC(dc); return E_FAIL; }
         HGDIOBJ oldFont = SelectObject(dc, font);
         SIZE size = {};
-        BOOL measured = GetTextExtentPoint32A(dc, content, (int)strlen(content), &size);
-        UINT width = panel ? height * 27 : measured ? (UINT)size.cx + 4 : 0;
-        UINT rows = panel ? height * 22 : measured ? (UINT)size.cy + 2 : 0;
+        BOOL measured = GetTextExtentPoint32A(dc, label, (int)strlen(label), &size);
+        UINT width = measured ? (UINT)size.cx + 4 : 0;
+        UINT rows = measured ? (UINT)size.cy + 2 : 0;
         BITMAPINFO info = {};
         info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
         info.bmiHeader.biWidth = (LONG)width; info.bmiHeader.biHeight = -(LONG)rows;
@@ -238,17 +235,13 @@ struct Renderer {
             HGDIOBJ oldBitmap = SelectObject(dc, bitmap);
             memset(pixels, 0, (size_t)width * rows * 4);
             SetTextColor(dc, RGB(255,255,255)); SetBkMode(dc, TRANSPARENT);
-            BOOL drawn;
-            if (panel) {
-                RECT box = {(LONG)height, (LONG)height, (LONG)(width - height), (LONG)(rows - height)};
-                drawn = DrawTextA(dc, content, -1, &box, DT_LEFT | DT_TOP | DT_NOPREFIX | DT_WORDBREAK) != 0;
-            } else drawn = TextOutA(dc, 2, 0, content, (int)strlen(content));
+            BOOL drawn = TextOutA(dc, 2, 0, label, (int)strlen(label));
             GdiFlush();
             BYTE *bytes = (BYTE *)pixels;
             for (size_t i = 0; i < (size_t)width * rows; ++i) {
                 BYTE shade = bytes[i*4];
                 bytes[i*4] = bytes[i*4+1] = bytes[i*4+2] = (BYTE)(shade * 0.8f);
-                bytes[i*4+3] = panel ? 240 : shade;
+                bytes[i*4+3] = shade;
             }
             D3D11_TEXTURE2D_DESC desc = {};
             desc.Width = width; desc.Height = rows; desc.MipLevels = desc.ArraySize = 1;
@@ -264,11 +257,11 @@ struct Renderer {
             SelectObject(dc, oldBitmap); DeleteObject(bitmap);
         }
         SelectObject(dc, oldFont); DeleteObject(font); DeleteDC(dc);
-        if (SUCCEEDED(hr)) { fontHeight = height; textWidth = width; textHeight = rows; snprintf(cachedText, sizeof(cachedText), "%s", content); cachedPanel = panel; }
+        if (SUCCEEDED(hr)) { fontHeight = height; textWidth = width; textHeight = rows; snprintf(cachedText, sizeof(cachedText), "%s", label); }
         return hr;
     }
 
-    HRESULT draw(IDXGISwapChain *chain, const char *content = label, bool panel = false)
+    HRESULT draw(IDXGISwapChain *chain)
     {
         Com<ID3D11Device> current;
         HRESULT hr = chain->GetDevice(__uuidof(ID3D11Device), (void **)&current.p);
@@ -285,8 +278,8 @@ struct Renderer {
         buffer->GetDesc(&desc);
         if (!desc.Width || !desc.Height) return S_FALSE;
         Layout place = layout(desc.Width, desc.Height);
-        if (place.font != fontHeight || !text.p || panel != cachedPanel || strcmp(content, cachedText)) {
-            hr = makeText(place.font, content, panel);
+        if (place.font != fontHeight || !text.p || strcmp(label, cachedText)) {
+            hr = makeText(place.font);
             if (FAILED(hr)) return hr;
         }
         Com<ID3D11RenderTargetView> target;
@@ -299,7 +292,6 @@ struct Renderer {
         context->RSSetState(raster.p);
         D3D11_VIEWPORT viewport = {place.right - (float)textWidth, place.top,
                                   (float)textWidth, (float)textHeight, 0, 1};
-        if (panel) { viewport.TopLeftX = ((float)desc.Width - textWidth) * 0.5f; viewport.TopLeftY = ((float)desc.Height - textHeight) * 0.5f; }
         context->RSSetViewports(1, &viewport);
         context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         context->GSSetShader(nullptr, nullptr, 0);
@@ -330,22 +322,10 @@ void report(HRESULT hr)
 
 HRESULT drawFrame(IDXGISwapChain *chain)
 {
-        Lock guard(&renderLock);
-        char content[1024];
-        bool panel = respecSnapshot && respecSnapshot(content, sizeof(content));
-        HRESULT drawn = S_OK;
-        if (panel) drawn = renderer.draw(chain, content, true);
-        else if (isVisible && isVisible()) drawn = renderer.draw(chain);
-        else if (respecFrame && !renderer.raster.p) {
-            Com<ID3D11Device> current;
-            drawn = chain->GetDevice(__uuidof(ID3D11Device), (void **)&current.p);
-            if (SUCCEEDED(drawn)) drawn = renderer.initialize(current.p);
-        }
-        report(drawn);
-        if (respecFrame) { DXGI_SWAP_CHAIN_DESC desc = {}; if (SUCCEEDED(chain->GetDesc(&desc))) respecFrame(desc.OutputWindow, SUCCEEDED(drawn)); }
-    if (drawn == DXGI_ERROR_DEVICE_REMOVED || drawn == DXGI_ERROR_DEVICE_RESET) {
-        renderer.reset();
-    }
+    Lock guard(&renderLock);
+    HRESULT drawn = isVisible && isVisible() ? renderer.draw(chain) : S_OK;
+    report(drawn);
+    if (drawn == DXGI_ERROR_DEVICE_REMOVED || drawn == DXGI_ERROR_DEVICE_RESET) renderer.reset();
     return drawn;
 }
 
@@ -367,12 +347,6 @@ DWORD configureTitleOverlay(const wchar_t *root, BYTE *site,
     return ERROR_SUCCESS;
 }
 } // namespace
-
-extern "C" void setRespecOverlayCallbacks(BOOL (*snapshot)(char *, size_t), void (*frame)(HWND, BOOL))
-{
-    Lock guard(&renderLock);
-    respecSnapshot = snapshot; respecFrame = frame;
-}
 
 extern "C" DWORD initializeTitleOverlay(const wchar_t *root, BOOL (*visible)(void), void (*log)(const char *))
 {

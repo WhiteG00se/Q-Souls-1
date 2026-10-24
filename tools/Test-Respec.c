@@ -1,149 +1,142 @@
-// Isolated model, input and native-commit adapter checks. Never runs the game.
+// Native UI adapters and hooks are exercised in private fixtures only. Never executes game code.
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-#include <wchar.h>
-#include "../runtime/TitleOverlay.h"
 static void logMessage(const char *message) { (void)message; }
-static void **findImport(const char *library, const char *name) { (void)library; (void)name; return NULL; }
-static BOOL replaceImport(void **slot, void *replacement) { *slot = replacement; return TRUE; }
-void setRespecOverlayCallbacks(BOOL (*snapshot)(char *, size_t), void (*frame)(HWND, BOOL)) { (void)snapshot; (void)frame; }
 #include "../runtime/RespecRuntime.h"
 #define CHECK(ok, message) do { if (!(ok)) { fprintf(stderr, "FAIL: %s (line %d)\n", message, __LINE__); return 1; } } while (0)
-static BYTE player[0x100];
-static int commits, commitLevel, commitSouls, commitCost;
+static BYTE player[0x100], context[0x2c0], manager[0x20], world[0x80], character[0x400];
+static uintptr_t managerPointer = (uintptr_t)manager, worldPointer = (uintptr_t)world;
+static const size_t fields[] = {0x40,0x48,0x50,0x58,0x60,0x88,0x68,0x70};
+static int selected, lastSound, commits, resets, fallbackAdjust, fallbackArrows, fallbackChanged;
+static unsigned char mode = 1;
 static BOOL loaded = TRUE;
-static BOOL fakeLoaded(void) { return loaded; }
-static const size_t fields[8] = {0x40,0x48,0x50,0x58,0x60,0x88,0x68,0x70};
-static void put(size_t offset, int value) { memcpy(player + offset, &value, 4); }
-static int get(size_t offset) { int v; memcpy(&v, player + offset, 4); return v; }
-static void __stdcall fakeCommit(void *context, const int *stats)
+static int readInt(const BYTE *data, size_t offset) { int result; memcpy(&result, data + offset, 4); return result; }
+static void put(BYTE *data, size_t offset, int value) { memcpy(data + offset, &value, 4); }
+static int price(int destination) { return destination * 100; }
+static int excessivePrice(int destination) { (void)destination; return INT_MAX; }
+static unsigned char isLevelUp(void) { return mode; }
+static BOOL isLoaded(void) { return loaded; }
+static int uiRegister(int index) { return index == 0x55 ? selected : -1; }
+static void sound(int value) { lastSound = value; }
+static void originalAdjust(void *data, unsigned char increase) { (void)data; (void)increase; fallbackAdjust++; }
+static void originalArrows(void *data, unsigned char *left, unsigned char *right) { (void)data; fallbackArrows++; *left = *right = 1; }
+static unsigned char originalChanged(void *data) { (void)data; fallbackChanged++; return 1; }
+static void originalReset(void *data)
 {
-    ++commits;
-    memcpy(&commitLevel, (BYTE *)context + 0x294, 4); memcpy(&commitSouls, (BYTE *)context + 0x2a0, 4); memcpy(&commitCost, (BYTE *)context + 0x29c, 4);
-    for (int i = 0; i < 8; ++i) put(fields[i], stats[i]);
-    put(0x90, commitLevel); put(0x94, commitSouls - commitCost); put(0x80, stats[8]); put(0x84, stats[8]);
+    BYTE *bytes = (BYTE *)data; resets++;
+    for (int i = 0; i < 8; ++i) put(bytes, 0x24c + i * 4, readInt(player, fields[i]));
+    put(bytes, 0x26c, readInt(player, 0x84)); put(bytes, 0x294, readInt(player, 0x90));
+    put(bytes, 0x298, readInt(player, 0x90)); put(bytes, 0x2a0, readInt(player, 0x94));
 }
-static SHORT WINAPI fakeKey(int key) { (void)key; return (SHORT)0x8000; }
-static BOOL WINAPI fakeKeys(PBYTE keys) { memset(keys, 0x80, 256); return TRUE; }
-static DWORD WINAPI fakePad(DWORD user, XINPUT_STATE *state) { (void)user; memset(state, 0x12, sizeof(*state)); return ERROR_SUCCESS; }
-static HRESULT __stdcall fakeDevice(void *device, DWORD size, void *state) { (void)device; memset(state, 0x34, size); return S_OK; }
-static HRESULT __stdcall fakeEvents(void *device, DWORD size, void *data, DWORD *count, DWORD flags)
+static void originalCommit(void *data, const int *values)
 {
-    (void)device; (void)flags;
-    if (data) {
-        memset(data, 0, size * 3);
-        DWORD offsets[] = {0xcb,0x58,0x58}, values[] = {0x80,0x80,0};
-        for (int i = 0; i < 3; ++i) { memcpy((BYTE *)data + i * size, &offsets[i], 4); memcpy((BYTE *)data + i * size + 4, &values[i], 4); }
-    }
-    *count = 3; return S_OK;
+    BYTE *bytes = (BYTE *)data; commits++;
+    for (int i = 0; i < 8; ++i) put(player, fields[i], values[i]);
+    put(player, 0x90, readInt(bytes, 0x294)); put(player, 0x94, readInt(bytes, 0x2a0) - readInt(bytes, 0x29c));
+    put(player, 0x80, values[8]); put(player, 0x84, values[8]);
 }
-static UINT messageKey = VK_F12;
-static BOOL WINAPI fakePeek(LPMSG message, HWND window, UINT min, UINT max, UINT remove)
+static void openScreen(void)
 {
-    (void)window; (void)min; (void)max; (void)remove;
-    memset(message, 0, sizeof(*message)); message->message = WM_KEYDOWN; message->wParam = messageKey; return TRUE;
+    respecReset(context);
+    // The native caller copies the baseline to its working stats after Reset.
+    memcpy(context + 0x270, context + 0x24c, 36); put(context, 0x29c, 0);
 }
-
+static int relayProbe(void *argument, int value) { return (int)(uintptr_t)argument + value; }
 int wmain(int argc, wchar_t **argv)
 {
-    CHECK(argc == 2, "arguments: installed EXE (mapped as data only)");
+    CHECK(argc == 2, "installed EXE path required");
     HMODULE image = LoadLibraryExW(argv[1], NULL, DONT_RESOLVE_DLL_REFERENCES);
-    CHECK(image && !respecResolve((BYTE *)image), "unique native assignment, refresh and event-flag signatures match installed EXE");
-    CHECK(respecDataGlobal > (uintptr_t)image && respecWorldGlobal > (uintptr_t)image && respecFlagsGlobal > (uintptr_t)image, "resolved globals belong to mapped game image");
-    BYTE *native = (BYTE *)respecNativeCommit;
-    BYTE saved = native[0x1c2]; DWORD previous, ignored;
-    CHECK(VirtualProtect(native + 0x1c2, 1, PAGE_READWRITE, &previous), "protect data-only signature fixture");
-    native[0x1c2] ^= 1;
-    CHECK(respecResolve((BYTE *)image) == ERROR_REVISION_MISMATCH, "reject changed native refresh tail");
-    native[0x1c2] = saved; VirtualProtect(native + 0x1c2, 1, previous, &ignored);
+    CHECK(image && !respecResolve((BYTE *)image), "unique native reset, adjustment, arrow, confirmation, assignment and cost signatures");
+    BYTE *native = (BYTE *)respecNativeCommit; BYTE saved = native[0x1c2]; DWORD protection, ignored;
+    CHECK(VirtualProtect(native + 0x1c2, 1, PAGE_READWRITE, &protection), "protect data-only signature fixture");
+    native[0x1c2] ^= 1; CHECK(respecResolve((BYTE *)image) == ERROR_REVISION_MISMATCH, "changed native refresh rejected");
+    native[0x1c2] = saved; VirtualProtect(native + 0x1c2, 1, protection, &ignored);
+    BYTE *priceCode = (BYTE *)respecNativePrice;
+    CHECK(priceCode[0x1e] == 0xb8 && readInt(priceCode, 0x1f) == 8432425, "native high-level special cost retained");
+    CHECK(VirtualProtect(priceCode, 1, PAGE_READWRITE, &protection), "protect data-only cost fixture");
+    saved = priceCode[0]; priceCode[0] ^= 1;
+    CHECK(respecResolve((BYTE *)image) == ERROR_REVISION_MISMATCH, "changed cost signature rejected");
+    priceCode[0] = saved; VirtualProtect(priceCode, 1, protection, &ignored);
+    CHECK(!respecResolve((BYTE *)image), "signatures restored");
+    BYTE *targets[] = {(BYTE *)respecOriginalAdjust, (BYTE *)respecOriginalArrows, (BYTE *)respecOriginalChanged, (BYTE *)respecNativeCommit, (BYTE *)respecOriginalReset};
+    const unsigned counts[] = {3,1,3,2,5}; NativeCalls hooks[5] = {0}; BYTE original[5][32];
+    for (unsigned i = 0; i < 5; ++i) {
+        memcpy(original[i], targets[i], 32); hooks[i].target = targets[i]; hooks[i].callback = (void *)relayProbe;
+        CHECK(nativePrepareCalls((BYTE *)image, &hooks[i], counts[i]) == ERROR_SUCCESS, "all known native call sites resolved before patching");
+    }
+    for (unsigned i = 0; i < 5; ++i) {
+        CHECK(!nativeApplyCalls(&hooks[i]), "patch calls in private mapped image only");
+        CHECK(!memcmp(original[i], targets[i], 32), "native function entry and unwind prologue unchanged");
+        for (unsigned j = 0; j < counts[i]; ++j) {
+            int32_t displacement; memcpy(&displacement, hooks[i].sites[j] + 1, 4);
+            CHECK(hooks[i].sites[j] + 5 + displacement == hooks[i].relay, "call points to leaf relay");
+        }
+        CHECK(((int (*)(void *, int))hooks[i].relay)((void *)20, 7) == 27, "relay preserves native argument registers and return value");
+    }
+    for (unsigned i = 0; i < 5; ++i) CHECK(!nativeRestoreCalls(&hooks[i]) && nativeCallSites((BYTE *)image, targets[i], hooks[i].sites, 8) == counts[i], "all original calls and protections restored");
+    NativeCalls mismatch = {0}; mismatch.target = targets[0]; mismatch.callback = (void *)relayProbe;
+    CHECK(nativePrepareCalls((BYTE *)image, &mismatch, 4) == ERROR_REVISION_MISMATCH && !mismatch.relay, "unexpected call count fails without mutation");
     FreeLibrary(image);
 
-    int base[] = {12,10,10,10,10,10,10,10}; RespecDraft d; char text[1024];
-    CHECK(respecBegin(&d, base, 1) && !d.freePoints && !d.selected, "starts at current stats, zero free points, Vitality");
-    respecText(&d, NULL, text, sizeof(text));
-    CHECK(strstr(text, "Vitality < 12 >\nAttunement 10") && strstr(text, "Faith 10\n\nSoul Level: 1\nFree Points: 0"), "row order, spacing, labels and selected-only arrows");
-    CHECK(!respecAdjust(&d, 1), "cannot raise without free points");
-    CHECK(respecAdjust(&d, -1) && d.values[0] == 11 && d.freePoints == 1, "lowering refunds one point");
-    CHECK(!respecCanCommit(&d, base, 1), "unspent points block commit");
-    respecMove(&d, -1); CHECK(d.selected == 7, "up from Vitality wraps to Faith");
-    respecText(&d, NULL, text, sizeof(text)); CHECK(strstr(text, "Vitality 11\n") && strstr(text, "Faith < 10 >"), "arrows follow cursor");
-    CHECK(!respecAdjust(&d, -1), "minimum ten enforced");
-    CHECK(respecAdjust(&d, 1) && respecCanCommit(&d, base, 1), "point conservation after redistribution");
-    respecMove(&d, 1); CHECK(d.selected == 0, "down from Faith wraps to Vitality");
-    CHECK(!respecCanCommit(&d, base, 2), "reject concurrent Soul Level change");
-    base[1]++; CHECK(!respecCanCommit(&d, base, 1), "reject concurrent base-stat change"); base[1]--;
-    base[2] = 9; CHECK(!respecBegin(&d, base, 1), "reject legacy stat below ten"); base[2] = 100; CHECK(!respecBegin(&d, base, 1), "reject invalid stat above 99"); base[2] = 10;
-    base[0] = 99; base[1] = 11; CHECK(respecBegin(&d, base, 1), "valid upper boundary"); respecMove(&d, 1); respecAdjust(&d, -1); respecMove(&d, -1); CHECK(!respecAdjust(&d, 1) && d.freePoints == 1, "cap does not consume a point");
+    respecOriginalReset = originalReset; respecOriginalAdjust = originalAdjust; respecOriginalArrows = originalArrows;
+    respecOriginalChanged = originalChanged; respecNativeCommit = originalCommit; respecNativePrice = price;
+    respecIsLevelUp = isLevelUp; respecIsLoaded = isLoaded; respecRegister = uiRegister; respecSound = sound;
+    respecDataGlobal = (uintptr_t)&managerPointer; respecWorldGlobal = (uintptr_t)&worldPointer;
+    uintptr_t owner = (uintptr_t)player, chr = (uintptr_t)character;
+    memcpy(manager + 0x10, &owner, 8); memcpy(world + 0x68, &chr, 8); put(character, 0x3e8, 600);
+    for (int i = 0; i < 8; ++i) put(player, fields[i], i == 0 ? 12 : 10);
+    put(player, 0x90, 1); put(player, 0x94, 0); put(player, 0x80, 77); put(player, 0x84, 3);
+    openScreen(); selected = 0; unsigned char left, right;
+    respecArrowsNative(context, &left, &right); CHECK(left && !right, "native arrows allow lowering base stat with no souls");
+    respecAdjustNative(context, 0);
+    CHECK(readInt(context, 0x270) == 11 && readInt(context, 0x24c) == 12 && readInt(context, 0x294) == 1 && !readInt(context, 0x29c), "working stat decreases; native comparison baseline and Soul Level preserved");
+    CHECK(!respecChangedNative(context), "native confirmation disabled with unspent point");
+    respecCommitNative(context, (int *)(context + 0x270)); CHECK(!commits, "unspent draft cannot reach native assignment");
+    selected = 1; respecArrowsNative(context, &left, &right); CHECK(!left && right, "free point enables native plus arrow without souls");
+    respecAdjustNative(context, 1); CHECK(!lastSound && readInt(context, 0x274) == 11 && respecChangedNative(context), "redistribution enables native confirmation");
+    respecCommitNative(context, (int *)(context + 0x270));
+    CHECK(commits == 1 && readInt(player, 0x40) == 11 && readInt(player, 0x48) == 11 && readInt(player, 0x90) == 1 && !readInt(player, 0x94), "native assignment commits redistribution without cost");
+    CHECK(readInt(player, 0x80) == 77 && readInt(player, 0x84) == 3, "both humanity fields preserved");
 
-    memset(player, 0x5a, sizeof(player)); base[0] = 12; base[1] = 10;
-    for (int i = 0; i < 8; ++i) { put(fields[i], base[i]); if (i != 5) put(fields[i] + 4, base[i] + 30); }
-    put(0x90, 1); put(0x94, 123456); put(0x80, 77); put(0x84, 3);
-    int readBase[8], level; CHECK(respecBase((uintptr_t)player, readBase, &level) && !memcmp(readBase, base, sizeof(base)), "reads only base fields; neighboring effect/bonus fields ignored");
-    CHECK(respecBegin(&respecDraft, readBase, level), "begin native adapter session");
-    respecOwner = (uintptr_t)player; respecCharacter = 123; memcpy(respecIdentity, player + 0xa0, sizeof(respecIdentity)); respecNativeCommit = fakeCommit;
-    respecAdjust(&respecDraft, -1); CHECK(!respecApply((uintptr_t)player, 123) && !commits, "no native call with unspent points");
-    respecMove(&respecDraft, 1); respecAdjust(&respecDraft, 1);
-    CHECK(!respecApply((uintptr_t)player, 124) && !commits, "reject changed character instance");
-    player[0xa0] ^= 1; CHECK(!respecApply((uintptr_t)player, 123) && !commits, "reject changed saved identity"); player[0xa0] ^= 1;
-    CHECK(respecApply((uintptr_t)player, 123) && commits == 1 && get(0x40) == 11 && get(0x48) == 11, "all attributes sent in one native commit");
-    CHECK(commitLevel == 1 && commitSouls == 123456 && !commitCost && get(0x90) == 1 && get(0x94) == 123456 && get(0x80) == 77 && get(0x84) == 3, "preserve level, souls and humanity");
-    CHECK(respecBase((uintptr_t)player, readBase, &level) && respecBegin(&respecDraft, readBase, level) && !respecDraft.freePoints, "reopening uses committed base stats");
-    CHECK(respecApply((uintptr_t)player, 123) && commits == 1, "unchanged draft needs no native call");
-    respecEditing = TRUE; respecAdjust(&respecDraft, -1); respecEnd(100);
-    CHECK(!respecEditing && get(0x40) == 11 && commits == 1, "interruption discards draft without applying");
+    put(player, 0x94, 500); openScreen(); selected = 0;
+    respecAdjustNative(context, 1); respecAdjustNative(context, 1);
+    CHECK(readInt(context, 0x294) == 3 && readInt(context, 0x29c) == 500, "native previews show two purchased levels and exact total cost");
+    respecArrowsNative(context, &left, &right); CHECK(left && !right, "plus disabled when next level is unaffordable");
+    respecAdjustNative(context, 1); CHECK(lastSound == 200 && readInt(context, 0x29c) == 500, "unaffordable adjustment leaves draft unchanged");
+    respecAdjustNative(context, 0); CHECK(readInt(context, 0x294) == 2 && readInt(context, 0x29c) == 200, "decrease refunds last purchased level");
+    BYTE beforeCancel[sizeof(player)]; memcpy(beforeCancel, player, sizeof(player)); openScreen();
+    CHECK(resets > 0 && !memcmp(player, beforeCancel, sizeof(player)) && readInt(context, 0x270) == 11 && !readInt(context, 0x29c), "native cancel/reset discards draft without character writes");
+    respecAdjustNative(context, 1); put(context, 0x294, 100); put(context, 0x29c, 0);
+    respecCommitNative(context, (int *)(context + 0x270));
+    CHECK(commits == 2 && readInt(player, 0x90) == 2 && readInt(player, 0x94) == 300 && readInt(context, 0x29c) == 200, "commit recomputes native total fields from draft stats");
 
-    LONG flags = 0x12340001;
-    respecSetFlag(&flags, RESPEC_REQUEST, TRUE); respecSetFlag(&flags, RESPEC_READY, TRUE);
-    CHECK(respecFlag(&flags, RESPEC_REQUEST) && respecFlag(&flags, RESPEC_READY), "bridge masks address expected flags");
-    respecSetFlag(&flags, RESPEC_REQUEST, FALSE); respecSetFlag(&flags, RESPEC_READY, FALSE);
-    CHECK(flags == 0x12340001, "atomic flag updates preserve unrelated event flags");
+    openScreen(); respecAdjustNative(context, 1); int committed = commits;
+    put(player, 0x94, 299); CHECK(!respecChangedNative(context), "concurrent soul change disables confirmation");
+    respecCommitNative(context, (int *)(context + 0x270)); CHECK(commits == committed, "concurrent soul change cannot commit"); put(player, 0x94, 300);
+    player[0xa0] ^= 1; CHECK(!respecChangedNative(context), "changed saved identity rejected"); player[0xa0] ^= 1;
+    put(player, 0x90, 3); CHECK(!respecChangedNative(context), "concurrent level change rejected"); put(player, 0x90, 2);
+    put(player, 0x40, 13); CHECK(!respecChangedNative(context), "concurrent base stat change rejected"); put(player, 0x40, 12);
+    loaded = FALSE; CHECK(!respecChangedNative(context), "loading invalidates native draft"); loaded = TRUE;
+    put(character, 0x3e8, 0); CHECK(!respecChangedNative(context), "death invalidates native draft"); put(character, 0x3e8, 600);
+    uintptr_t different = chr + 8; memcpy(world + 0x68, &different, 8); CHECK(!respecChangedNative(context), "changed character instance rejected"); memcpy(world + 0x68, &chr, 8);
+    openScreen(); selected = 8; respecArrowsNative(context, &left, &right); respecAdjustNative(context, 0);
+    CHECK(!left && !right && lastSound == 200 && readInt(context, 0x290) == 3, "humanity row remains uneditable in Level Up");
+    selected = -1; respecAdjustNative(context, 1); CHECK(lastSound == 200, "invalid native cursor rejected");
+    mode = 0; respecAdjustNative(context, 1); respecArrowsNative(context, &left, &right);
+    CHECK(fallbackAdjust == 1 && fallbackArrows == 1 && respecChangedNative(context) && fallbackChanged == 1, "other native menu modes delegate unchanged"); mode = 1;
 
-    respecRealKey = fakeKey; respecRealKeys = fakeKeys; respecRealXInput = fakePad;
-    BYTE keys[256]; XINPUT_STATE pad;
-    CHECK(respecKey(VK_LEFT) && respecKeys(keys) && keys[0] && !respecXInput(0, &pad) && pad.Gamepad.wButtons, "input forwarded while inactive");
-    InterlockedExchange(&respecCapturing, 1);
-    CHECK(!respecKey(VK_LEFT) && respecKeys(keys) && !keys[0] && !respecXInput(0, &pad) && !pad.Gamepad.wButtons && !pad.Gamepad.sThumbLX, "keyboard and controller neutralized while editing");
-    CHECK(respecKey(VK_F12) == fakeKey(VK_F12) && keys[VK_F12] == 0x80, "F12 is preserved in asynchronous and keyboard-state paths even while editing");
-    void *table[11] = {0}; void **device = table; table[9] = (void *)fakeDevice; table[10] = (void *)fakeEvents;
-    CHECK(respecHookInput(table + 9, (void *)respecDeviceState) && respecHookInput(table + 10, (void *)respecDeviceData), "DirectInput hooks install");
-    DWORD events = 3; BYTE state[256], data[48];
-    CHECK(SUCCEEDED(respecDeviceState(&device, sizeof(state), state)) && !state[0] && state[0x58] == 0x34, "DirectInput captures game keys while preserving F12 state");
-    CHECK(SUCCEEDED(respecDeviceData(&device, 16, data, &events, 0)) && events == 2 && data[0] == 0x58 && data[4] == 0x80 && data[16] == 0x58 && !data[20], "buffered F12 press/release preserved while game-key events are consumed");
-    respecRealPeek = fakePeek; MSG message;
-    CHECK(respecPeek(&message, NULL, 0, 0, PM_REMOVE) && message.message == WM_KEYDOWN && message.wParam == VK_F12, "F12 message passes through Respec capture");
-    messageKey = VK_LEFT;
-    CHECK(respecPeek(&message, NULL, 0, 0, PM_REMOVE) && message.message == WM_NULL, "game navigation message remains captured");
-    InterlockedExchange(&respecCapturing, 0);
-    CHECK(SUCCEEDED(respecDeviceState(&device, sizeof(state), state)) && state[0] == 0x34, "DirectInput forwarding restored");
-
-    // Exercise the real bridge lifecycle against private memory and a hidden test
-    // window. No game process, actual input or game routines participate.
-    HWND window = CreateWindowExW(0, L"STATIC", L"Isolated Respec bridge", 0, 0, 0, 0, 0, NULL, NULL, GetModuleHandleW(NULL), NULL);
-    CHECK(window, "hidden bridge window");
-    BYTE managerBytes[0x20] = {0}, worldBytes[0x80] = {0}, characterBytes[0x400] = {0};
-    static BYTE flagBytes[0x11400];
-    uintptr_t manager = (uintptr_t)managerBytes, world = (uintptr_t)worldBytes, flagData = (uintptr_t)flagBytes, flagHolder = (uintptr_t)&flagData;
-    uintptr_t ownerPointer = (uintptr_t)player, characterPointer = (uintptr_t)characterBytes;
-    memcpy(managerBytes + 0x10, &ownerPointer, sizeof(ownerPointer)); memcpy(worldBytes + 0x68, &characterPointer, sizeof(characterPointer));
-    int health = 600; memcpy(characterBytes + 0x3e8, &health, 4);
-    respecDataGlobal = (uintptr_t)&manager; respecWorldGlobal = (uintptr_t)&world; respecFlagsGlobal = (uintptr_t)&flagHolder;
-    respecIsLoaded = fakeLoaded; respecPresented(window, TRUE); respecTick();
-    volatile LONG *bridge = respecFlagWord(); CHECK(bridge && respecFlag(bridge, RESPEC_READY), "runtime publishes readiness for live character");
-    respecSetFlag(bridge, RESPEC_REQUEST, TRUE); Sleep(15); respecTick();
-    CHECK(respecEditing && !respecDraft.freePoints && respecCapture(), "bonfire request opens captured draft");
-    respecAdjust(&respecDraft, -1); loaded = FALSE; Sleep(15); respecTick();
-    CHECK(!respecEditing && !respecFlag(bridge, RESPEC_READY) && respecFlag(bridge, RESPEC_DONE) && !respecFlag(bridge, RESPEC_COMMITTED) && commits == 1, "loading cancels draft and releases script without commit");
-    loaded = TRUE; respecSetFlag(bridge, RESPEC_REQUEST, FALSE); respecSetFlag(bridge, RESPEC_DONE, FALSE); Sleep(15); respecTick();
-    respecSetFlag(bridge, RESPEC_REQUEST, TRUE); Sleep(15); respecTick(); CHECK(respecEditing, "subsequent request opens fresh draft");
-    respecSetFlag(bridge, RESPEC_REQUEST, FALSE); Sleep(15); respecTick(); CHECK(!respecEditing && commits == 1, "ESD interruption clears editor without changing saved stats");
-    respecSetFlag(bridge, RESPEC_REQUEST, TRUE); Sleep(15); respecTick(); CHECK(respecEditing, "request after interruption");
-    health = 0; memcpy(characterBytes + 0x3e8, &health, 4); Sleep(15); respecTick();
-    CHECK(!respecEditing && respecFlag(bridge, RESPEC_DONE) && !respecFlag(bridge, RESPEC_COMMITTED), "death discards draft");
-    DestroyWindow(window);
+    RespecDraft draft; int base[] = {12,10,10,10,10,10,10,10};
+    CHECK(respecBegin(&draft, base, 1), "model fixture"); draft.price = excessivePrice; draft.souls = INT_MAX;
+    CHECK(respecAdjust(&draft, 1) && !respecAdjust(&draft, 1), "cost overflow rejected");
+    CHECK(respecBegin(&draft, base, 713), "level cap fixture"); draft.price = price; draft.souls = INT_MAX;
+    CHECK(!respecAdjust(&draft, 1) && respecAdjust(&draft, -1) && respecAdjust(&draft, 1), "level cap permits free redistribution only");
+    base[0] = 99; CHECK(respecBegin(&draft, base, 1), "stat cap fixture"); draft.price = price; draft.souls = INT_MAX;
+    CHECK(!respecAdjust(&draft, 1), "stat 99 cap enforced"); draft.selected = 1;
+    CHECK(!respecAdjust(&draft, -1), "stat 10 minimum enforced");
     (void)initializeRespec;
-    puts("PASS: Respec signatures, draft rules, base-only stats, native adapter, interruption, bridge flags and input capture.");
+    puts("PASS: native screen signatures and 14 call sites; reversible register-preserving relays; original comparison stats; free redistribution; paid levels/refunds; confirm/cancel; stale-source guards; limits; other-mode passthrough. No game code executed.");
     return 0;
 }
