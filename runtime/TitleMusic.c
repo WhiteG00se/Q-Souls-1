@@ -30,7 +30,7 @@ static void readStartupAudio(void)
     optionsLoaded = FALSE;
 }
 
-static void *titleMovie, *openingMovie;
+static void *titleMovie;
 static wchar_t trackPath[MAX_PATH], logPath[MAX_PATH];
 static void * (__stdcall *realOpen)(const char *, uint32_t);
 static void (__stdcall *realClose)(void *);
@@ -362,7 +362,6 @@ static int __stdcall releaseEvents(void *system)
         suppressGameMusic(FALSE);
         musicSuppressed = FALSE;
         resumePosition = 0;
-        openingMovie = NULL;
         gameSystem = musicCategory = NULL;
         musicGroup = NULL;
         musicEventSystem = NULL;
@@ -464,7 +463,7 @@ static BOOL titleOverlayVisible(void)
 static void updateMusic(void)
 {
     EnterCriticalSection(&audioLock);
-    if (InterlockedCompareExchange(&active, 0, 0) && !openingMovie && gameplayLoaded()) {
+    if (InterlockedCompareExchange(&active, 0, 0) && gameplayLoaded()) {
         InterlockedExchange(&active, 0);
         InterlockedExchange(&overlayActive, 0);
         logMessage("Gameplay loaded.");
@@ -524,48 +523,47 @@ static DWORD WINAPI musicThread(void *unused)
 }
 static void * __stdcall openMovie(const char *name, uint32_t flags)
 {
-    EnterCriticalSection(&audioLock);
-    void *movie = realOpen(name, flags);
     const char *filename = strrchr(name, '\\');
     if (!filename) filename = strrchr(name, '/');
     filename = filename ? filename + 1 : name;
-    if (movie && _stricmp(filename, "frpg_title.bik") == 0) {
+    BOOL isTitle = _stricmp(filename, "frpg_title.bik") == 0;
+    if (!isTitle) {
+        EnterCriticalSection(&audioLock);
+        // Restore native audio before Bink opens its sound stream and clock.
+        InterlockedExchange(&active, 0);
+        InterlockedExchange(&overlayActive, 0);
+        stopMusic();
+        suppressGameMusic(FALSE);
+        resumePosition = 0;
+        LeaveCriticalSection(&audioLock);
+        SetEvent(changed);
+    }
+    // Bink may wait for audio callbacks; never hold our mixer lock across it.
+    void *movie = realOpen(name, flags);
+    if (movie && isTitle) {
+        EnterCriticalSection(&audioLock);
         titleMovie = movie;
-        openingMovie = NULL;
         soundOnOff(movie, 0);
         InterlockedExchange(&active, 1);
         InterlockedExchange(&overlayActive, 1);
         captureMusicCategory();
         SetEvent(changed);
         logMessage("Title movie opened.");
+        LeaveCriticalSection(&audioLock);
     }
-    if (movie && _stricmp(filename, "frpg_title.bik") != 0) {
-        InterlockedExchange(&overlayActive, 0);
-        if (_stricmp(filename, "frpg_opening.bik") == 0 && InterlockedCompareExchange(&active, 0, 0)) {
-            openingMovie = movie;
-            soundOnOff(movie, 0);
-            logMessage("Opening cinematic muted; custom theme continues.");
-        } else {
-            InterlockedExchange(&active, 0);
-            stopMusic();
-            suppressGameMusic(FALSE);
-        }
-        SetEvent(changed);
-    }
-    LeaveCriticalSection(&audioLock);
+    if (movie && !isTitle) logMessage("Cinematic opened with original audio; custom theme stopped.");
     return movie;
 }
 
 static void __stdcall closeMovie(void *movie)
 {
     EnterCriticalSection(&audioLock);
-    if (movie == openingMovie) openingMovie = NULL;
     if (movie == titleMovie) {
         titleMovie = NULL;
         logMessage("Title movie closed.");
     }
-    realClose(movie);
     LeaveCriticalSection(&audioLock);
+    realClose(movie);
 }
 
 static void **findImportInImage(BYTE *base, const char *library, const char *name)

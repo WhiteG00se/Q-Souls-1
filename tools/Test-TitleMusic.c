@@ -19,6 +19,8 @@ static int (*normalEventInit)(void *, int, unsigned int, void *, unsigned int);
 static int (*normalEventUpdate)(void *);
 static int (*normalUpdate)(void *);
 static volatile LONG updating;
+static volatile LONG coreUpdates;
+static BOOL checkNativeMovie, nativeOpenSafe, nativeCloseSafe;
 static int simulatedDevice;
 static BOOL failSharedStream;
 static int (__stdcall *normalCreateStream)(void *, const char *, unsigned int, void *, void **);
@@ -54,6 +56,7 @@ static int __stdcall simulateDriver(void *system, int driver)
 }
 static int __stdcall observeUpdate(void *system)
 {
+    InterlockedIncrement(&coreUpdates);
     if (InterlockedIncrement(&updating) != 1) concurrentUpdates = TRUE;
     Sleep(1);
     int result = normalUpdate(system);
@@ -94,9 +97,38 @@ static int __stdcall silentInit(void *system, int channels, unsigned int flags, 
         (void *)rejectOpen, (void *)unusedClose, (void *)unusedRead, (void *)unusedSeek, NULL, NULL, 2048);
     return result;
 }
+static DWORD WINAPI nativeMovieCallback(void *unused)
+{
+    (void)unused;
+    return musicEventSystem ? (DWORD)updateEvents(musicEventSystem) : 0;
+}
+static BOOL nativeMovieAudioReady(void)
+{
+    int muted = TRUE;
+    LONG before = coreUpdates;
+    BOOL readyForMovie = !active && !titleOverlayVisible() && !musicChannel && !titleSystem &&
+        !musicSuppressed && !resumePosition && musicCategory &&
+        !categoryGetMute(musicCategory, &muted) && !muted;
+    // Model a movie API waiting for an audio callback on another thread.
+    HANDLE callback = CreateThread(NULL, 0, nativeMovieCallback, NULL, 0, NULL);
+    if (!callback) return FALSE;
+    DWORD wait = WaitForSingleObject(callback, 2000), result = 1;
+    if (wait == WAIT_OBJECT_0) GetExitCodeThread(callback, &result);
+    CloseHandle(callback);
+    return readyForMovie && wait == WAIT_OBJECT_0 && !result && before == coreUpdates;
+}
 static void * __stdcall testOpen(const char *name, uint32_t flags)
-{ (void)name; (void)flags; static char movies[32]; static unsigned int next; return &movies[next++ % 32]; }
-static void __stdcall testClose(void *movie) { (void)movie; }
+{
+    static char movies[32]; static unsigned int next;
+    if (checkNativeMovie) nativeOpenSafe = nativeMovieAudioReady() &&
+        !strcmp(name, "movww\\frpg_opening.bik") && flags == 0x1234;
+    return &movies[next++ % 32];
+}
+static void __stdcall testClose(void *movie)
+{
+    (void)movie;
+    if (checkNativeMovie) nativeCloseSafe = nativeMovieAudioReady();
+}
 static int __stdcall testSound(void *movie, int enabled)
 { (void)movie; if (!enabled) ++movieMuteCalls; return 0; }
 
@@ -235,21 +267,34 @@ int wmain(int argc, wchar_t **argv)
     options[0x0c] = options[0x0d] = options[0x0e] = 0;
     updateMusic();
     CHECK(optionsLoaded && titleGain() == 0.0f, "all-zero live settings honored AFTER initialization");
-    int mutedBeforeMovie = movieMuteCalls;
-    void *opening = openMovie("movww\\frpg_opening.bik", 0);
-    CHECK(opening && movieMuteCalls == mutedBeforeMovie + 1 && !titleOverlayVisible(),
-          "opening cinematic muted and overlay hidden");
+    options[0x0c] = 7;
     updateMusic();
-    CHECK(musicChannel == firstChannel && active, "opening cinematic preserves custom channel");
+    CHECK(!API(events, "FMOD_EventCategory_SetVolume", SetVolume)(category, 0.7f) &&
+          !API(core, "FMOD_ChannelGroup_SetVolume", SetVolume)(musicGroup, 0.7f), "native cinematic music volume");
+    int mutedBeforeMovie = movieMuteCalls;
+    checkNativeMovie = TRUE;
+    void *opening = openMovie("movww\\frpg_opening.bik", 0x1234);
+    CHECK(opening && nativeOpenSafe && movieMuteCalls == mutedBeforeMovie && !titleOverlayVisible(),
+          "original audio restored before cinematic opens, movie arguments unchanged, callbacks unblocked");
+    LONG beforeMovieUpdates = coreUpdates;
+    updateMusic();
+    CHECK(!musicChannel && !active && !musicSuppressed && !titleSystem,
+          "opening cinematic has exclusive original audio");
+    CHECK(!groupGetVolume(musicGroup, &gain) && fabsf(gain - 0.7f) < 0.0001f,
+          "native music volume remains unchanged");
+    CHECK(!updateEvents(eventSystem) && beforeMovieUpdates == coreUpdates,
+          "custom worker does not service mixer while native cinematic plays");
     uintptr_t camera[13] = {0}, player[13] = {0}, cameraPointer = (uintptr_t)camera;
     camera[12] = (uintptr_t)player; player[12] = 1;
     cameraGlobal = (uintptr_t)&cameraPointer;
     updateMusic();
-    CHECK(musicChannel == firstChannel && active, "cinematic keeps theme even if camera is prepared early");
+    CHECK(!musicChannel && !active, "camera preparation cannot restart custom music during cinematic");
     closeMovie(opening);
+    CHECK(nativeCloseSafe, "movie close allows audio callbacks without holding mixer lock");
+    checkNativeMovie = FALSE;
     updateMusic();
     CHECK(!active && !musicChannel && !titleSystem && !musicSuppressed &&
-          !categoryGetMute(category, &muted) && !muted, "gameplay stops custom theme and restores original mute");
+          !categoryGetMute(category, &muted) && !muted, "gameplay retains original audio after cinematic");
     CHECK(!releasedGameSystem && !normalUpdate(system), "game mixer remains owned and usable by game");
     cameraGlobal = 0;
     CHECK(!categorySetMute(category, TRUE), "preexisting game music mute");
