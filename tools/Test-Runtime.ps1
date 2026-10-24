@@ -27,12 +27,12 @@ $parameterDirectory = Join-Path $parameterFixture '.local\game\param\GameParam'
 New-Item -ItemType Directory -Path $parameterDirectory -Force | Out-Null
 [IO.File]::WriteAllBytes((Join-Path $parameterDirectory 'GameParam.parambnd.dcx'), [Text.Encoding]::ASCII.GetBytes('TEST'))
 $assetFixture = Join-Path $parameterFixture '.local\respec'
-foreach ($relative in @('script\talk\m10_00_00_00.talkesdbnd.dcx', 'msg\ENGLISH\menu.msgbnd.dcx')) {
+foreach ($relative in @('script\talk\m10_00_00_00.talkesdbnd.dcx', 'msg\ENGLISH\menu.msgbnd.dcx', 'menu\menu.drb', 'menu\menu.drb.dcx')) {
     $target = Join-Path $assetFixture $relative
     New-Item -ItemType Directory -Path (Split-Path -Parent $target) -Force | Out-Null
     [IO.File]::WriteAllBytes($target, [Text.Encoding]::ASCII.GetBytes('TEST'))
 }
-[IO.File]::WriteAllLines((Join-Path $assetFixture 'overrides.txt'), [string[]]@('script\talk\m10_00_00_00.talkesdbnd.dcx', 'msg\ENGLISH\menu.msgbnd.dcx'), [Text.Encoding]::ASCII)
+[IO.File]::WriteAllLines((Join-Path $assetFixture 'overrides.txt'), [string[]]@('script\talk\m10_00_00_00.talkesdbnd.dcx', 'msg\ENGLISH\menu.msgbnd.dcx', 'menu\menu.drb', 'menu\menu.drb.dcx'), [Text.Encoding]::ASCII)
 & (Join-Path $temporary 'Test-ParamOverride.exe') (Join-Path $game 'DarkSoulsRemastered.exe') $parameterFixture
 if ($LASTEXITCODE -ne 0) { throw 'Parameter redirection tests failed.' }
 & $Compiler @common (Join-Path $PSScriptRoot 'Test-SaveExtension.c') -municode -o (Join-Path $temporary 'Test-SaveExtension.exe')

@@ -5,6 +5,7 @@ $temporary = Join-Path 'D:\AI\Temp\Q-Souls-1\respec-assets' ([Guid]::NewGuid().T
 New-Item -ItemType Directory -Path $temporary -Force | Out-Null
 Add-Type -Path @((Join-Path $repository 'launcher\StartingClasses.cs'), (Join-Path $repository 'launcher\RespecAssets.cs'), (Join-Path $PSScriptRoot 'Test-RespecAssets.cs'))
 $originals = @(Get-ChildItem -LiteralPath (Join-Path $GamePath 'script\talk'), (Join-Path $GamePath 'event'), (Join-Path $GamePath 'msg') -Recurse -File)
+$originals += @(Get-Item -LiteralPath (Join-Path $GamePath 'menu\menu.drb'), (Join-Path $GamePath 'menu\menu.drb.dcx'))
 $hashes = @{}
 foreach ($file in $originals) { $hashes[$file.FullName] = (Get-FileHash -LiteralPath $file.FullName).Hash }
 [RespecAssetChecks]::Run($GamePath)

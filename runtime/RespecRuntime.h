@@ -14,7 +14,12 @@ static unsigned char (*respecIsLevelUp)(void);
 static int (*respecRegister)(int);
 static void (*respecSound)(int);
 static BOOL (*respecIsLoaded)(void);
-static NativeCalls respecHooks[5];
+static NativeCalls respecHooks[6];
+static void (*respecOriginalRefresh)(void *);
+static void *(*respecFindWidget)(void *, const wchar_t *);
+static void (*respecWidgetVisible)(void *, unsigned char);
+static void (*respecWriteNumber)(void *, int, int, int, int);
+static uintptr_t respecTextManagerGlobal;
 static struct { void *context; uintptr_t owner, character; BYTE identity[48]; BOOL valid; } respecSession;
 
 static BOOL respecRead(uintptr_t address, void *output, size_t size)
@@ -95,6 +100,27 @@ static DWORD respecResolve(BYTE *image)
     memcpy(&relative, adjustCode + 0x14, 4); respecRegister = (void *)(adjustCode + 0x18 + relative);
     memcpy(&relative, adjustCode + 0x39, 4); respecIsLevelUp = (void *)(adjustCode + 0x3d + relative);
     memcpy(&relative, adjustCode + 0x1f5, 4); respecSound = (void *)(adjustCode + 0x1f9 + relative);
+    const BYTE refresh[] = {0x4c,0x8b,0xdc,0x55,0x48,0x81,0xec,0x80,0,0,0,0x48,0x8b,0x05,0,0,0,0,0x48,0x33,0xc4,0x48,0x89,0x44,0x24,0x58};
+    const BYTE findWidget[] = {0x48,0x89,0x5c,0x24,0x10,0x57,0x48,0x83,0xec,0x20,0x48,0x8b,0x59,0x38,0x48,0x8b,0xfa,0x48,0x85,0xdb,0x74,0x27};
+    const BYTE visible[] = {0x44,0x0f,0xb6,0x41,0x28,0x02,0xd2,0x41,0x32,0xd0,0x41,0x0f,0xb6,0xc0,0x80,0xe2,0x02,0xd0,0xe8,0x41,0x32,0xd0,0x24,0x01,0x88,0x51,0x28,0xc3};
+    BYTE *refreshCode = respecFind(image, refresh, "xxxxxxxxxxxxxx????xxxxxxxx", sizeof(refresh));
+    BYTE *widgetCode = respecFind(image, findWidget, "xxxxxxxxxxxxxxxxxxxxxx", sizeof(findWidget));
+    BYTE *visibleCode = respecFind(image, visible, "xxxxxxxxxxxxxxxxxxxxxxxxxxxx", sizeof(visible));
+    if (!refreshCode || !widgetCode || !visibleCode || refreshCode[0xbe] != 0xe8 || refreshCode[0x100] != 0xe8 ||
+        memcmp(refreshCode + 0xb2, "\x48\x8b\x0d", 3)) return ERROR_REVISION_MISMATCH;
+    memcpy(&relative, refreshCode + 0xbf, 4); BYTE *writeNumber = refreshCode + 0xc3 + relative;
+    memcpy(&relative, refreshCode + 0x101, 4);
+    const BYTE numberSignature[] = {0x40,0x55,0x53,0x56,0x57,0x41,0x56,0x41,0x57,0x48,0x8d,0x6c,0x24,0xd9,0x48,0x81,0xec,0xd8,0,0,0};
+    if (refreshCode + 0x105 + relative != writeNumber || memcmp(writeNumber, numberSignature, sizeof(numberSignature))) return ERROR_REVISION_MISMATCH;
+    if (memcmp(refreshCode + 0x2f, "\x66\x0f\x6f\x05", 4) || memcmp(refreshCode + 0x37, "\x66\x0f\x6f\x0d", 4) ||
+        memcmp(refreshCode + 0x77, "\xc7\x44\x24\x50\x44\0\0\0", 8)) return ERROR_REVISION_MISMATCH;
+    int slots[8];
+    memcpy(&relative, refreshCode + 0x33, 4); memcpy(slots, refreshCode + 0x37 + relative, 16);
+    memcpy(&relative, refreshCode + 0x3b, 4); memcpy(slots + 4, refreshCode + 0x3f + relative, 16);
+    for (int i = 0; i < 8; ++i) if (slots[i] != 59 + i) return ERROR_REVISION_MISMATCH;
+    respecOriginalRefresh = (void *)refreshCode; respecFindWidget = (void *)widgetCode;
+    respecWidgetVisible = (void *)visibleCode; respecWriteNumber = (void *)writeNumber;
+    respecTextManagerGlobal = respecRelative(refreshCode + 0xb2);
     return ERROR_SUCCESS;
 }
 
@@ -202,25 +228,38 @@ static void respecCommitNative(void *context, const int *stats)
     memcpy((void *)(respecSession.owner + 0x80), &otherHumanity, 4);
     logMessage("Level Up & Respec committed through the native Level Up screen.");
 }
+// The native Level Up updater skips text slot 67 (the unused Luck attribute).
+// Reuse that slot for the new read-only row; never change the eight stats or humanity.
+static void respecRefreshNative(void *context)
+{
+    respecOriginalRefresh(context);
+    void *label = respecFindWidget(context, L"qs_free_points_label");
+    void *value = respecFindWidget(context, L"qs_free_points_value");
+    RespecDraft draft; BOOL show = respecIsLevelUp() && respecLoadNative(context, &draft);
+    if (label) respecWidgetVisible(label, (unsigned char)show);
+    if (value) respecWidgetVisible(value, (unsigned char)show);
+    uintptr_t manager = respecPointer(respecTextManagerGlobal);
+    if (show && label && value && manager) respecWriteNumber((void *)manager, 67, draft.freePoints, draft.freePoints > 0 ? 65 : -1, 0); // Native blue palette 65; default at zero.
+}
 static DWORD initializeRespec(BOOL (*loaded)(void))
 {
     BYTE *image = (BYTE *)GetModuleHandleW(NULL);
     DWORD error = respecResolve(image); if (error) return error;
     respecIsLoaded = loaded;
     BYTE *targets[] = {(BYTE *)respecOriginalAdjust, (BYTE *)respecOriginalArrows, (BYTE *)respecOriginalChanged,
-        (BYTE *)respecNativeCommit, (BYTE *)respecOriginalReset};
+        (BYTE *)respecNativeCommit, (BYTE *)respecOriginalReset, (BYTE *)respecOriginalRefresh};
     void *callbacks[] = {(void *)respecAdjustNative, (void *)respecArrowsNative, (void *)respecChangedNative,
-        (void *)respecCommitNative, (void *)respecReset};
-    const unsigned counts[] = {3,1,3,2,5};
-    for (unsigned i = 0; i < 5; ++i) {
+        (void *)respecCommitNative, (void *)respecReset, (void *)respecRefreshNative};
+    const unsigned counts[] = {3,1,3,2,5,1};
+    for (unsigned i = 0; i < 6; ++i) {
         respecHooks[i].target = targets[i]; respecHooks[i].callback = callbacks[i];
         error = nativePrepareCalls(image, &respecHooks[i], counts[i]); if (error) goto failed;
     }
-    for (unsigned i = 0; i < 5; ++i) { error = nativeApplyCalls(&respecHooks[i]); if (error) goto failed; }
+    for (unsigned i = 0; i < 6; ++i) { error = nativeApplyCalls(&respecHooks[i]); if (error) goto failed; }
     logMessage("Native Level Up extended with Respec; original controls, previews and save flow retained.");
     return ERROR_SUCCESS;
 failed:
-    for (unsigned i = 5; i > 0; --i) {
+    for (unsigned i = 6; i > 0; --i) {
         DWORD restore = nativeRestoreCalls(&respecHooks[i - 1]); if (restore) return restore;
     }
     return error;

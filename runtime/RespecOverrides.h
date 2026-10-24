@@ -11,6 +11,7 @@ static BOOL respecAssetName(const wchar_t *name)
         const wchar_t *file = name + 12;
         return !wcschr(file, L'\\') && n > 27 && !_wcsicmp(name + n - 15, L".talkesdbnd.dcx");
     }
+    if (!_wcsicmp(name, L"menu\\menu.drb") || !_wcsicmp(name, L"menu\\menu.drb.dcx")) return TRUE;
     if (!_wcsnicmp(name, L"msg\\", 4)) {
         const wchar_t *slash = wcschr(name + 4, L'\\');
         return slash && slash > name + 4 && !_wcsicmp(slash, L"\\menu.msgbnd.dcx");

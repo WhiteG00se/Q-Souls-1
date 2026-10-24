@@ -8,7 +8,7 @@ using System.Text.RegularExpressions;
 // Keep native bonfire behavior; replace only the Level Up label and its availability.
 public static class RespecAssets
 {
-    public const int TextId = 15000990;
+    public const int TextId = 15000990, FreePointsTextId = 109990;
     const int LevelUpText = 15000100, Data = 108;
     static void Need(bool ok, string error) { if (!ok) throw new InvalidDataException(error); }
     static void Bounds(byte[] b, long p, long n) { Need(p >= 0 && n >= 0 && p <= b.Length - n, "Invalid Respec asset bounds."); }
@@ -193,7 +193,88 @@ public static class RespecAssets
         }
         return patched;
     }
-    public static byte[] PatchFmg(byte[] b, string title)
+    // DRB section/shape layouts referenced against soulsmods/SoulsFormats DRB sources.
+    // Clone two static text controls; all existing geometry, animations and navigation remain unchanged.
+    sealed class LayoutBlock { public string Name; public byte[] Bytes; public int Count; }
+    static void Put(byte[] b, int offset, int value) { Array.Copy(BitConverter.GetBytes(value), 0, b, offset, 4); }
+    static void PutShort(byte[] b, int offset, int value) { Need(value >= short.MinValue && value <= short.MaxValue, "DRB coordinate overflow."); Array.Copy(BitConverter.GetBytes((short)value), 0, b, offset, 2); }
+    static byte[] Append(byte[] a, byte[] b) { byte[] result = new byte[checked(a.Length + b.Length)]; Array.Copy(a, result, a.Length); Array.Copy(b, 0, result, a.Length, b.Length); return result; }
+    static string LayoutString(byte[] strings, int offset) {
+        int end = offset; do { Bounds(strings, end, 2); end += 2; } while (strings[end - 2] != 0 || strings[end - 1] != 0);
+        return Encoding.Unicode.GetString(strings, offset, end - offset - 2);
+    }
+    public static byte[] PatchLevelUpLayout(byte[] source)
+    {
+        bool compressed = source.Length >= 4 && Encoding.ASCII.GetString(source, 0, 4) == "DCX\0";
+        byte[] b = compressed ? StartingClasses.Unpack(source) : source; Need(b.Length >= 32 && Encoding.ASCII.GetString(b, 0, 4) == "DRB\0", "Unsupported menu DRB.");
+        var blocks = new List<LayoutBlock>(); var byName = new Dictionary<string, LayoutBlock>();
+        int position = 16;
+        while (position < b.Length) {
+            Bounds(b, position, 16); string name = Encoding.ASCII.GetString(b, position, 4);
+            int size = I(b, position + 4), count = Count(I(b, position + 8));
+            Need(size >= 0 && size % 16 == 0 && I(b, position + 12) == 0, "Unsupported DRB section.");
+            var block = new LayoutBlock { Name = name, Count = count, Bytes = Slice(b, position + 16, size) };
+            blocks.Add(block); byName.Add(name.TrimEnd('\0'), block); position = checked(position + 16 + size);
+        }
+        var strings = byName["STR"]; var shapes = byName["SHAP"]; var parameters = byName["SHPR"];
+        var controls = byName["CTRL"]; var objects = byName["DLGO"]; var groups = byName["DLG"];
+        Need(shapes.Count * 8 <= shapes.Bytes.Length && controls.Count * 8 <= controls.Bytes.Length && objects.Count * 32 == objects.Bytes.Length && groups.Count * 64 == groups.Bytes.Length, "Unsupported DRB record sizes.");
+        int usedStrings = 0;
+        for (int i = 0; i < strings.Count; i++) {
+            string value = LayoutString(strings.Bytes, usedStrings);
+            Need(value != "qs_free_points_label" && value != "qs_free_points_value", "Free Points layout already patched.");
+            usedStrings += Encoding.Unicode.GetByteCount(value) + 2;
+        }
+        int root = -1, label = -1, number = -1;
+        for (int g = 0; g < groups.Count; g++) {
+            int group = g * 64; string name = LayoutString(strings.Bytes, I(groups.Bytes, group));
+            int count = Count(I(groups.Bytes, group + 32)), offset = I(groups.Bytes, group + 36); Bounds(objects.Bytes, offset, count * 32);
+            if (name == "C01-03") { Need(root < 0, "Duplicate Level Up group."); root = group; }
+            for (int i = 0; i < count; i++) {
+                int obj = offset + i * 32; string child = LayoutString(strings.Bytes, I(objects.Bytes, obj));
+                if (name == "C01_03_bg" && child == "text_param-name7") label = obj;
+                if (name == "C01-03" && child == "text_param_force") number = obj;
+            }
+        }
+        Need(root >= 0 && label >= 0 && number >= 0, "Native Level Up row templates missing.");
+        byte[] stringData = Slice(strings.Bytes, 0, usedStrings); var newObjects = new List<byte>();
+        int[] templates = {label, number}; string[] names = {"qs_free_points_label", "qs_free_points_value"};
+        for (int i = 0; i < 2; i++) {
+            byte[] obj = Slice(objects.Bytes, templates[i], 32); int shape = I(obj, 4), control = I(obj, 8);
+            Bounds(shapes.Bytes, shape, 8); Bounds(controls.Bytes, control, 8);
+            byte[] shapeRecord = Slice(shapes.Bytes, shape, 8); int dataOffset = I(shapeRecord, 4), end = parameters.Bytes.Length;
+            Need(LayoutString(strings.Bytes, I(shapeRecord, 0)) == "Text", "Free Points template must be native text.");
+            for (int j = 0; j < shapes.Count; j++) { int offset = I(shapes.Bytes, j * 8 + 4); if (offset > dataOffset && offset < end) end = offset; }
+            int size = end - dataOffset; Need(size == 42 || size == 50, "Unsupported native text shape.");
+            byte[] data = Slice(parameters.Bytes, dataOffset, size); int baseSize = size == 50 ? 16 : 8;
+            Need(data[baseSize + 1] == 1 && data[baseSize + 15] == 1 && I(data, baseSize + 16) == 28, "Unsupported native FMG text style.");
+            PutShort(data, 0, i == 0 ? 75 : 218); PutShort(data, 2, 16); PutShort(data, 4, i == 0 ? 215 : 288); PutShort(data, 6, 44);
+            // The native unused Luck text slot is not part of the eight attributes or humanity.
+            Put(data, baseSize + 24, i == 0 ? FreePointsTextId : 201111);
+            Put(shapeRecord, 4, parameters.Bytes.Length); parameters.Bytes = Append(parameters.Bytes, data);
+            Put(obj, 0, stringData.Length); stringData = Append(stringData, Encoding.Unicode.GetBytes(names[i] + "\0"));
+            Put(obj, 4, shapes.Count * 8); shapes.Bytes = Append(Slice(shapes.Bytes, 0, shapes.Count * 8), shapeRecord); shapes.Count++;
+            Put(obj, 8, controls.Count * 8); controls.Bytes = Append(Slice(controls.Bytes, 0, controls.Count * 8), Slice(controls.Bytes, control, 8)); controls.Count++;
+            newObjects.AddRange(obj);
+        }
+        strings.Bytes = stringData; strings.Count += 2;
+        int insertion = I(groups.Bytes, root + 36) + I(groups.Bytes, root + 32) * 32;
+        objects.Bytes = Append(Append(Slice(objects.Bytes, 0, insertion), newObjects.ToArray()), Slice(objects.Bytes, insertion, objects.Bytes.Length - insertion)); objects.Count += 2;
+        for (int g = 0; g < groups.Count; g++) {
+            int group = g * 64;
+            if (group == root) Put(groups.Bytes, group + 32, I(groups.Bytes, group + 32) + 2);
+            else if (I(groups.Bytes, group + 36) >= insertion) Put(groups.Bytes, group + 36, I(groups.Bytes, group + 36) + 64);
+        }
+        using (var output = new Output()) {
+            output.W.Write(Slice(b, 0, 16));
+            foreach (var block in blocks) {
+                output.W.Write(Encoding.ASCII.GetBytes(block.Name)); output.W.Write((block.Bytes.Length + 15) & ~15); output.W.Write(block.Count); output.W.Write(0);
+                output.W.Write(block.Bytes); output.Align(16);
+            }
+            return compressed ? StartingClasses.Pack(source, output.Bytes()) : output.Bytes();
+        }
+    }
+    public static byte[] PatchFmg(byte[] b, string title, int textId = TextId)
     {
         Bounds(b, 0, 28); Need(b[0] == 0 && b[1] == 0 && b[2] == 1 && b[3] == 0, "Unsupported Respec FMG.");
         int groups = Count(I(b, 12)), total = Count(I(b, 16)), offsets = I(b, 20); Bounds(b, 28, groups * 12); Bounds(b, offsets, total * 4);
@@ -206,7 +287,7 @@ public static class RespecAssets
                 texts.Add(id, text);
             }
         }
-        Need(!texts.ContainsKey(TextId), "Respec menu text identifier collision."); texts.Add(TextId, Encoding.Unicode.GetBytes(title + "\0"));
+        Need(!texts.ContainsKey(textId), "Respec menu text identifier collision."); texts.Add(textId, Encoding.Unicode.GetBytes(title + "\0"));
         using (var o = new Output()) {
             o.W.Write(Slice(b, 0, 28)); int n = 0, previous = -2, start = 0, firstId = 0, lastId = 0; var ranges = new List<int[]>();
             foreach (var pair in texts) { if (pair.Key != previous + 1 && n != 0) ranges.Add(new int[] { start, firstId, lastId }); if (pair.Key != previous + 1) { start = n; firstId = pair.Key; } lastId = pair.Key; previous = pair.Key; n++; }
@@ -217,7 +298,9 @@ public static class RespecAssets
             o.FixI(4, checked((int)o.Position)); return o.Bytes();
         }
     }
-    public static string Title(string language, string catalog = null)
+    public static string Title(string language, string catalog = null) { return Localized(language, 1, catalog); }
+    public static string FreePointsTitle(string language, string catalog = null) { return Localized(language, 2, catalog); }
+    static string Localized(string language, int key, string catalog)
     {
         string source = catalog ?? Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "assets", "text", "RespecLocales.inc");
         // Add-Type hosts live outside the repository; resolve relative to this invocation's repository.
@@ -225,7 +308,7 @@ public static class RespecAssets
         foreach (string line in File.ReadAllLines(source, Encoding.UTF8)) {
             if (!line.StartsWith("RESPEC_LOCALE(", StringComparison.Ordinal)) continue;
             var strings = Regex.Matches(line, "\"([^\"]*)\"");
-            if (strings.Count == 2 && strings[0].Groups[1].Value.Equals(language, StringComparison.OrdinalIgnoreCase)) return strings[1].Groups[1].Value;
+            if (strings.Count == 3 && strings[0].Groups[1].Value.Equals(language, StringComparison.OrdinalIgnoreCase)) return strings[key].Groups[1].Value;
         }
         throw new InvalidDataException("Unsupported game language: " + language);
     }
@@ -239,10 +322,19 @@ public static class RespecAssets
             int n = PatchTalk(binder); if (n > 0) output.Add("script\\talk\\" + Path.GetFileName(file), binder.Write()); bonfires += n;
         }
         Need(bonfires > 0, "No compatible bonfire scripts found.");
+        foreach (string name in new[] { "menu.drb", "menu.drb.dcx" }) {
+            string path = Path.Combine(game, "menu", name); Need(File.Exists(path), "Missing required game component: " + path);
+            output.Add("menu\\" + name, PatchLevelUpLayout(File.ReadAllBytes(path)));
+        }
         foreach (string language in Directory.GetDirectories(messages)) {
             string file = Path.Combine(language, "menu.msgbnd.dcx"); Need(File.Exists(file), "Missing required game component: " + file); var binder = new Binder(File.ReadAllBytes(file)); int count = 0;
             foreach (var entry in binder.Entries) if (entry.Name.EndsWith("\\Event_text_.fmg", StringComparison.OrdinalIgnoreCase)) { entry.Bytes = PatchFmg(entry.Bytes, Title(Path.GetFileName(language), catalog)); count++; }
-            Need(count > 0, "Event menu text missing: " + file); output.Add("msg\\" + Path.GetFileName(language) + "\\menu.msgbnd.dcx", binder.Write());
+            Need(count > 0, "Event menu text missing: " + file);
+            count = 0;
+            foreach (var entry in binder.Entries) if (entry.Name.EndsWith("\\Menu_general_text_.fmg", StringComparison.OrdinalIgnoreCase)) {
+                entry.Bytes = PatchFmg(entry.Bytes, FreePointsTitle(Path.GetFileName(language), catalog), FreePointsTextId); count++;
+            }
+            Need(count > 0, "General menu text missing: " + file); output.Add("msg\\" + Path.GetFileName(language) + "\\menu.msgbnd.dcx", binder.Write());
         }
         return output;
     }

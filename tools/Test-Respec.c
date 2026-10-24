@@ -38,6 +38,20 @@ static void originalCommit(void *data, const int *values)
     put(player, 0x90, readInt(bytes, 0x294)); put(player, 0x94, readInt(bytes, 0x2a0) - readInt(bytes, 0x29c));
     put(player, 0x80, values[8]); put(player, 0x84, values[8]);
 }
+static int rowLabel, rowValue, labelVisible, valueVisible, displayedPoints = -1, displayedColor, refreshes, valueWrites;
+static uintptr_t textManager = 1234;
+static void originalRefresh(void *data) { (void)data; refreshes++; }
+static void *findWidget(void *data, const wchar_t *name) {
+    if (data != context) return NULL;
+    return !wcscmp(name, L"qs_free_points_label") ? &rowLabel : !wcscmp(name, L"qs_free_points_value") ? &rowValue : NULL;
+}
+static void widgetVisible(void *widget, unsigned char visible) {
+    if (widget == &rowLabel) labelVisible = visible;
+    if (widget == &rowValue) valueVisible = visible;
+}
+static void writeNumber(void *manager, int slot, int value, int color, int flags) {
+    if (manager == (void *)textManager && slot == 67 && !flags) { displayedPoints = value; displayedColor = color; valueWrites++; }
+}
 static void openScreen(void)
 {
     respecReset(context);
@@ -61,13 +75,13 @@ int wmain(int argc, wchar_t **argv)
     CHECK(respecResolve((BYTE *)image) == ERROR_REVISION_MISMATCH, "changed cost signature rejected");
     priceCode[0] = saved; VirtualProtect(priceCode, 1, protection, &ignored);
     CHECK(!respecResolve((BYTE *)image), "signatures restored");
-    BYTE *targets[] = {(BYTE *)respecOriginalAdjust, (BYTE *)respecOriginalArrows, (BYTE *)respecOriginalChanged, (BYTE *)respecNativeCommit, (BYTE *)respecOriginalReset};
-    const unsigned counts[] = {3,1,3,2,5}; NativeCalls hooks[5] = {0}; BYTE original[5][32];
-    for (unsigned i = 0; i < 5; ++i) {
+    BYTE *targets[] = {(BYTE *)respecOriginalAdjust, (BYTE *)respecOriginalArrows, (BYTE *)respecOriginalChanged, (BYTE *)respecNativeCommit, (BYTE *)respecOriginalReset, (BYTE *)respecOriginalRefresh};
+    const unsigned counts[] = {3,1,3,2,5,1}; NativeCalls hooks[6] = {0}; BYTE original[6][32];
+    for (unsigned i = 0; i < 6; ++i) {
         memcpy(original[i], targets[i], 32); hooks[i].target = targets[i]; hooks[i].callback = (void *)relayProbe;
         CHECK(nativePrepareCalls((BYTE *)image, &hooks[i], counts[i]) == ERROR_SUCCESS, "all known native call sites resolved before patching");
     }
-    for (unsigned i = 0; i < 5; ++i) {
+    for (unsigned i = 0; i < 6; ++i) {
         CHECK(!nativeApplyCalls(&hooks[i]), "patch calls in private mapped image only");
         CHECK(!memcmp(original[i], targets[i], 32), "native function entry and unwind prologue unchanged");
         for (unsigned j = 0; j < counts[i]; ++j) {
@@ -76,13 +90,15 @@ int wmain(int argc, wchar_t **argv)
         }
         CHECK(((int (*)(void *, int))hooks[i].relay)((void *)20, 7) == 27, "relay preserves native argument registers and return value");
     }
-    for (unsigned i = 0; i < 5; ++i) CHECK(!nativeRestoreCalls(&hooks[i]) && nativeCallSites((BYTE *)image, targets[i], hooks[i].sites, 8) == counts[i], "all original calls and protections restored");
+    for (unsigned i = 0; i < 6; ++i) CHECK(!nativeRestoreCalls(&hooks[i]) && nativeCallSites((BYTE *)image, targets[i], hooks[i].sites, 8) == counts[i], "all original calls and protections restored");
     NativeCalls mismatch = {0}; mismatch.target = targets[0]; mismatch.callback = (void *)relayProbe;
     CHECK(nativePrepareCalls((BYTE *)image, &mismatch, 4) == ERROR_REVISION_MISMATCH && !mismatch.relay, "unexpected call count fails without mutation");
     FreeLibrary(image);
 
     respecOriginalReset = originalReset; respecOriginalAdjust = originalAdjust; respecOriginalArrows = originalArrows;
     respecOriginalChanged = originalChanged; respecNativeCommit = originalCommit; respecNativePrice = price;
+    respecOriginalRefresh = originalRefresh; respecFindWidget = findWidget; respecWidgetVisible = widgetVisible;
+    respecWriteNumber = writeNumber; respecTextManagerGlobal = (uintptr_t)&textManager;
     respecIsLevelUp = isLevelUp; respecIsLoaded = isLoaded; respecRegister = uiRegister; respecSound = sound;
     respecDataGlobal = (uintptr_t)&managerPointer; respecWorldGlobal = (uintptr_t)&worldPointer;
     uintptr_t owner = (uintptr_t)player, chr = (uintptr_t)character;
@@ -91,12 +107,17 @@ int wmain(int argc, wchar_t **argv)
     put(player, 0x90, 1); put(player, 0x94, 0); put(player, 0x80, 77); put(player, 0x84, 3);
     openScreen(); selected = 0; unsigned char left, right;
     respecArrowsNative(context, &left, &right); CHECK(left && !right, "native arrows allow lowering base stat with no souls");
-    respecAdjustNative(context, 0);
+    respecRefreshNative(context);
+    CHECK(refreshes == 1 && labelVisible && valueVisible && displayedPoints == 0 && displayedColor == -1, "native row starts at zero in the default color");
+    respecAdjustNative(context, 0); respecRefreshNative(context);
+    CHECK(displayedPoints == 1 && displayedColor == 65, "refunded point is blue");
+    respecAdjustNative(context, 0); respecRefreshNative(context); CHECK(displayedPoints == 2 && displayedColor == 65, "multiple refunded points stay blue");
+    respecAdjustNative(context, 1); respecRefreshNative(context); CHECK(displayedPoints == 1 && displayedColor == 65, "positive counter stays blue while assigning points");
     CHECK(readInt(context, 0x270) == 11 && readInt(context, 0x24c) == 12 && readInt(context, 0x294) == 1 && !readInt(context, 0x29c), "working stat decreases; native comparison baseline and Soul Level preserved");
     CHECK(!respecChangedNative(context), "native confirmation disabled with unspent point");
     respecCommitNative(context, (int *)(context + 0x270)); CHECK(!commits, "unspent draft cannot reach native assignment");
     selected = 1; respecArrowsNative(context, &left, &right); CHECK(!left && right, "free point enables native plus arrow without souls");
-    respecAdjustNative(context, 1); CHECK(!lastSound && readInt(context, 0x274) == 11 && respecChangedNative(context), "redistribution enables native confirmation");
+    respecAdjustNative(context, 1); respecRefreshNative(context); CHECK(displayedPoints == 0 && displayedColor == -1, "counter returns to default color at zero"); CHECK(!lastSound && readInt(context, 0x274) == 11 && respecChangedNative(context), "redistribution enables native confirmation");
     respecCommitNative(context, (int *)(context + 0x270));
     CHECK(commits == 1 && readInt(player, 0x40) == 11 && readInt(player, 0x48) == 11 && readInt(player, 0x90) == 1 && !readInt(player, 0x94), "native assignment commits redistribution without cost");
     CHECK(readInt(player, 0x80) == 77 && readInt(player, 0x84) == 3, "both humanity fields preserved");
@@ -107,7 +128,7 @@ int wmain(int argc, wchar_t **argv)
     respecArrowsNative(context, &left, &right); CHECK(left && !right, "plus disabled when next level is unaffordable");
     respecAdjustNative(context, 1); CHECK(lastSound == 200 && readInt(context, 0x29c) == 500, "unaffordable adjustment leaves draft unchanged");
     respecAdjustNative(context, 0); CHECK(readInt(context, 0x294) == 2 && readInt(context, 0x29c) == 200, "decrease refunds last purchased level");
-    BYTE beforeCancel[sizeof(player)]; memcpy(beforeCancel, player, sizeof(player)); openScreen();
+    BYTE beforeCancel[sizeof(player)]; memcpy(beforeCancel, player, sizeof(player)); openScreen(); respecRefreshNative(context); CHECK(displayedPoints == 0 && displayedColor == -1, "counter resets to default color on cancel/reopen");
     CHECK(resets > 0 && !memcmp(player, beforeCancel, sizeof(player)) && readInt(context, 0x270) == 11 && !readInt(context, 0x29c), "native cancel/reset discards draft without character writes");
     respecAdjustNative(context, 1); put(context, 0x294, 100); put(context, 0x29c, 0);
     respecCommitNative(context, (int *)(context + 0x270));
@@ -125,6 +146,10 @@ int wmain(int argc, wchar_t **argv)
     openScreen(); selected = 8; respecArrowsNative(context, &left, &right); respecAdjustNative(context, 0);
     CHECK(!left && !right && lastSound == 200 && readInt(context, 0x290) == 3, "humanity row remains uneditable in Level Up");
     selected = -1; respecAdjustNative(context, 1); CHECK(lastSound == 200, "invalid native cursor rejected");
+    int writesBefore = valueWrites; mode = 0; respecRefreshNative(context);
+    CHECK(!labelVisible && !valueVisible && valueWrites == writesBefore, "Free Points row hidden and no text writes in other native modes");
+    mode = 1; loaded = FALSE; respecRefreshNative(context);
+    CHECK(!labelVisible && !valueVisible && valueWrites == writesBefore, "invalid character state hides row"); loaded = TRUE;
     mode = 0; respecAdjustNative(context, 1); respecArrowsNative(context, &left, &right);
     CHECK(fallbackAdjust == 1 && fallbackArrows == 1 && respecChangedNative(context) && fallbackChanged == 1, "other native menu modes delegate unchanged"); mode = 1;
 
@@ -137,6 +162,6 @@ int wmain(int argc, wchar_t **argv)
     CHECK(!respecAdjust(&draft, 1), "stat 99 cap enforced"); draft.selected = 1;
     CHECK(!respecAdjust(&draft, -1), "stat 10 minimum enforced");
     (void)initializeRespec;
-    puts("PASS: native screen signatures and 14 call sites; reversible register-preserving relays; original comparison stats; free redistribution; paid levels/refunds; confirm/cancel; stale-source guards; limits; other-mode passthrough. No game code executed.");
+    puts("PASS: native screen signatures and 15 call sites; reversible register-preserving relays; original comparison stats; free redistribution; paid levels/refunds; confirm/cancel; stale-source guards; limits; native Free Points counter; other-mode passthrough. No game code executed.");
     return 0;
 }

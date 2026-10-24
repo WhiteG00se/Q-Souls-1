@@ -24,14 +24,71 @@ public static class RespecAssetChecks
         }
         Check(BitConverter.ToInt32(b, 4) == b.Length, "FMG file size"); return result;
     }
+    sealed class LayoutBlock { public byte[] Bytes; public int Count; }
+    static Dictionary<string, LayoutBlock> Layout(byte[] input)
+    {
+        byte[] b = Encoding.ASCII.GetString(input, 0, 4) == "DRB\0" ? input : StartingClasses.Unpack(input);
+        var blocks = new Dictionary<string, LayoutBlock>(); int position = 16;
+        while (position < b.Length) {
+            string name = Encoding.ASCII.GetString(b, position, 4).TrimEnd('\0');
+            int size = BitConverter.ToInt32(b, position + 4), count = BitConverter.ToInt32(b, position + 8);
+            Check(size >= 0 && size % 16 == 0 && position + 16 <= b.Length - size, "Valid layout section bounds/alignment.");
+            var bytes = new byte[size]; Array.Copy(b, position + 16, bytes, 0, size);
+            blocks.Add(name, new LayoutBlock { Bytes = bytes, Count = count }); position += 16 + size;
+        }
+        Check(position == b.Length, "No truncated layout section."); return blocks;
+    }
+    static int At(byte[] b, int offset) { return BitConverter.ToInt32(b, offset); }
+    static string LayoutName(byte[] b, int offset) {
+        int end = offset; while (b[end] != 0 || b[end + 1] != 0) end += 2;
+        return Encoding.Unicode.GetString(b, offset, end - offset);
+    }
+    static byte[] Part(byte[] b, int offset, int size) { var result = new byte[size]; Array.Copy(b, offset, result, 0, size); return result; }
+    static void CheckLayout(byte[] source, byte[] output)
+    {
+        var before = Layout(source); var after = Layout(output);
+        foreach (var block in before) {
+            if (block.Key == "STR" || block.Key == "SHAP" || block.Key == "SHPR" || block.Key == "CTRL" || block.Key == "DLGO" || block.Key == "DLG") continue;
+            Check(block.Value.Count == after[block.Key].Count && Equal(block.Value.Bytes, after[block.Key].Bytes), "Textures, control parameters, animations and schedules untouched.");
+        }
+        Check(after["STR"].Count == before["STR"].Count + 2 && after["SHAP"].Count == before["SHAP"].Count + 2 && after["CTRL"].Count == before["CTRL"].Count + 2 && after["DLGO"].Count == before["DLGO"].Count + 2 && after["DLG"].Count == before["DLG"].Count, "Exactly one native label/value pair added.");
+        foreach (string name in new[] { "SHAP", "CTRL" }) Check(Equal(Part(before[name].Bytes, 0, before[name].Count * 8), Part(after[name].Bytes, 0, before[name].Count * 8)), "Existing shape/control references preserved.");
+        Check(Equal(before["SHPR"].Bytes, Part(after["SHPR"].Bytes, 0, before["SHPR"].Bytes.Length)), "Existing geometry/style data untouched.");
+        int newRows = 0;
+        for (int g = 0; g < before["DLG"].Count; ++g) {
+            byte[] oldGroup = before["DLG"].Bytes, newGroup = after["DLG"].Bytes; int group = g * 64;
+            string name = LayoutName(before["STR"].Bytes, At(oldGroup, group)); bool level = name == "C01-03";
+            int count = At(oldGroup, group + 32), oldOffset = At(oldGroup, group + 36), newOffset = At(newGroup, group + 36);
+            Check(At(newGroup, group + 32) == count + (level ? 2 : 0) && Equal(Part(oldGroup, group, 32), Part(newGroup, group, 32)) && Equal(Part(oldGroup, group + 40, 24), Part(newGroup, group + 40, 24)), "All original group bounds and controls unchanged.");
+            for (int i = 0; i < count; ++i) Check(Equal(Part(before["DLGO"].Bytes, oldOffset + i * 32, 32), Part(after["DLGO"].Bytes, newOffset + i * 32, 32)), "Every original widget/navigation record unchanged.");
+            if (!level) continue;
+            for (int i = 0; i < 2; i++) {
+                int obj = newOffset + (count + i) * 32; byte[] objects = after["DLGO"].Bytes;
+                string widget = LayoutName(after["STR"].Bytes, At(objects, obj));
+                Check(widget == (i == 0 ? "qs_free_points_label" : "qs_free_points_value"), "New widgets have isolated names.");
+                int shape = At(objects, obj + 4), data = At(after["SHAP"].Bytes, shape + 4);
+                byte[] parameters = after["SHPR"].Bytes;
+                Check(BitConverter.ToInt16(parameters, data) == (i == 0 ? 75 : 218) && BitConverter.ToInt16(parameters, data + 2) == 16 && BitConverter.ToInt16(parameters, data + 4) == (i == 0 ? 215 : 288) && BitConverter.ToInt16(parameters, data + 6) == 44, "Read-only row fits above Name; no original stat or Humanity row moves.");
+                int baseSize = Encoding.ASCII.GetString(source, 0, 4) == "DRB\0" ? 8 : 16;
+                Check(At(parameters, data + baseSize + 4) == (i == 0 ? 7 : 3) && BitConverter.ToInt16(parameters, data + baseSize + 12) == 6 && parameters[data + baseSize + 14] == (i == 0 ? 8 : 9), "New row preserves native label/value font, colors and alignment.");
+                Check(parameters[data + baseSize + 15] == 1 && At(parameters, data + baseSize + 24) == (i == 0 ? RespecAssets.FreePointsTextId : 201111), "Native FMG label and independent numeric variable used."); newRows++;
+            }
+        }
+        Check(newRows == 2, "Only Level Up gains a row.");
+        bool rejected = false; try { RespecAssets.PatchLevelUpLayout(output); } catch (InvalidDataException) { rejected = true; }
+        Check(rejected, "Already-patched layout rejected safely.");
+    }
     public static void Run(string game)
     {
         int count, repeatedCount;
         var files = RespecAssets.Generate(game, out count); var repeated = RespecAssets.Generate(game, out repeatedCount);
-        Check(count == 75 && repeatedCount == count && files.Count == 31, "All bonfire scripts and language archives covered.");
+        Check(count == 75 && repeatedCount == count && files.Count == 33, "All bonfire scripts and language archives covered.");
         int bonfires = 0, tutorial = 0, dlc = 0, languages = 0;
         foreach (var pair in files) {
             Check(Equal(pair.Value, repeated[pair.Key]), "Repeat generation deterministic.");
+            if (pair.Key.StartsWith("menu\\", StringComparison.Ordinal)) {
+                CheckLayout(File.ReadAllBytes(Path.Combine(game, pair.Key)), pair.Value); continue;
+            }
             var before = new RespecAssets.Binder(File.ReadAllBytes(Path.Combine(game, pair.Key)));
             var after = new RespecAssets.Binder(pair.Value);
             Check(before.Entries.Count == after.Entries.Count, "Binder entry count preserved.");
@@ -40,9 +97,14 @@ public static class RespecAssetChecks
                 Check(a.Name == b.Name && a.Id == b.Id && a.Flags == b.Flags, "Binder metadata preserved.");
                 if (Equal(a.Bytes, b.Bytes)) continue;
                 if (pair.Key.StartsWith("msg\\", StringComparison.Ordinal)) {
-                    Check(a.Name.EndsWith("\\Event_text_.fmg"), "Only native bonfire label FMG changed.");
+                    bool general = a.Name.EndsWith("\\Menu_general_text_.fmg");
+                    Check(general || a.Name.EndsWith("\\Event_text_.fmg"), "Only bonfire and Free Points label FMGs changed.");
                     var oldTexts = Texts(a.Bytes); var newTexts = Texts(b.Bytes);
-                    Check(newTexts.Count == oldTexts.Count + 1 && newTexts[RespecAssets.TextId] == RespecAssets.Title(pair.Key.Split('\\')[1]), "One localized combined bonfire label added.");
+                    if (general) Check(oldTexts.ContainsKey(201111) && oldTexts[201111] == "<?lvUpPcLuck?>", "All languages use the verified native numeric variable for the counter.");
+                    int textId = general ? RespecAssets.FreePointsTextId : RespecAssets.TextId;
+                    string language = pair.Key.Split('\\')[1];
+                    string expected = general ? RespecAssets.FreePointsTitle(language) : RespecAssets.Title(language);
+                    Check(newTexts.Count == oldTexts.Count + 1 && newTexts[textId] == expected && !String.IsNullOrWhiteSpace(expected), "One correctly localized label added.");
                     foreach (var text in oldTexts) Check(newTexts[text.Key] == text.Value, "All native screen translations preserved.");
                     continue;
                 }
@@ -76,6 +138,6 @@ public static class RespecAssetChecks
         }
         bool invalid = false; try { new RespecAssets.Esd(new byte[200]); } catch (InvalidDataException) { invalid = true; }
         Check(invalid, "Malformed ESD rejected.");
-        Console.WriteLine("PASS: native Level Up transitions and save flow unchanged; 75 bonfires including both tutorial bonfires and 5 DLC; 13 localized labels; deterministic generation and safe collisions.");
+        Console.WriteLine("PASS: native Level Up transitions and save flow unchanged; 75 bonfires including both tutorial bonfires and 5 DLC; 13 languages; native Free Points row and original layout preservation; deterministic generation and safe collisions.");
     }
 }
