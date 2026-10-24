@@ -746,7 +746,8 @@ public sealed class LauncherWindow : Form
         }
         var result = (Tuple<int, string>)e.Result;
         details.Text = BulletOutput(result.Item2);
-        status.Text = result.Item1 == 0 ? (checking ? "Setup checks passed. Game was not launched." : "Game launched. You can close the launcher.") : "Could not complete the operation. See details below.";
+        status.Text = result.Item1 == 0 ? (checking ? "Setup checks passed. Game was not launched." : "Game launched.") : "Could not complete the operation. See details below.";
+        if (result.Item1 == 0 && !checking) Close();
     }
     void ShowError(Exception ex) { status.Text = ex.Message; details.Text = BulletOutput(ex.ToString()); }
 }
