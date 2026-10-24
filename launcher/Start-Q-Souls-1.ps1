@@ -92,6 +92,8 @@ try {
     # Keep generated parameters external; other assets are read through junctions.
     $runtimeRoot = Join-Path $repository '.local\game'
     . (Join-Path $PSScriptRoot 'Initialize-StartingClasses.ps1')
+    . (Join-Path $repository 'launcher\Initialize-Respec.ps1')
+    Initialize-Respec -GamePath $gamePath -Repository $repository -ValidateOnly:$CheckOnly
     Initialize-StartingClasses -GamePath $gamePath -RuntimeRoot $runtimeRoot -ValidateOnly:$CheckOnly
     if ($CheckOnly) { Write-Host 'Checks passed; game not launched.'; exit 0 }
     $assetDirectories = @(Get-ChildItem -LiteralPath $gamePath -Directory |

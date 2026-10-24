@@ -1,6 +1,7 @@
 // Isolated software rendering in a hidden test window; never loads the game.
 #include "../runtime/TitleOverlay.cpp"
 #include <math.h>
+#include "../runtime/RespecModel.h"
 #define CHECK(ok, message) do { if (!(ok)) { fprintf(stderr, "FAIL: %s (line %d)\n", message, __LINE__); return 1; } } while (0)
 
 static BOOL visible = TRUE;
@@ -8,9 +9,21 @@ static BOOL testVisible() { return visible; }
 static void testLog(const char *message) { fprintf(stderr, "%s\n", message); }
 static unsigned presents;
 static UINT lastInterval, lastFlags;
+static bool panelVisible;
+static RespecDraft panelDraft;
+static unsigned frameReports;
+static BOOL lastFrameOK;
+static BOOL panelSnapshot(char *text, size_t size) { if (panelVisible) respecText(&panelDraft, nullptr, text, size); return panelVisible; }
+static void panelFrame(HWND, BOOL ok) { ++frameReports; lastFrameOK = ok; }
+static HRESULT STDMETHODCALLTYPE failBuffer(IDXGISwapChain *, UINT, REFIID, void **) { return E_FAIL; }
 static HRESULT STDMETHODCALLTYPE testPresent(IDXGISwapChain *, UINT interval, UINT flags)
 {
     ++presents; lastInterval = interval; lastFlags = flags; return S_OK;
+}
+static HRESULT testFrame(IDXGISwapChain *chain, UINT interval, UINT flags)
+{
+    if (!(flags & DXGI_PRESENT_TEST)) drawFrame(chain);
+    return testPresent(chain, interval, flags);
 }
 
 static bool fixture(const wchar_t *root, const char *data, DWORD length)
@@ -41,7 +54,7 @@ static HRESULT clear(IDXGISwapChain *chain, ID3D11Device *device, ID3D11DeviceCo
 
 struct Pixels { UINT count, minX, maxX, minY, maxY; };
 static HRESULT pixels(IDXGISwapChain *chain, ID3D11Device *device,
-                       ID3D11DeviceContext *context, Pixels *result)
+                       ID3D11DeviceContext *context, Pixels *result, const wchar_t *exportPath = nullptr)
 {
     Com<ID3D11Texture2D> buffer, staging;
     HRESULT hr = chain->GetBuffer(0, __uuidof(ID3D11Texture2D), (void **)&buffer.p);
@@ -56,6 +69,17 @@ static HRESULT pixels(IDXGISwapChain *chain, ID3D11Device *device,
     D3D11_MAPPED_SUBRESOURCE map;
     hr = context->Map(staging.p, 0, D3D11_MAP_READ, 0, &map);
     if (FAILED(hr)) return hr;
+    if (exportPath) {
+        FILE *file = _wfopen(exportPath, L"wb");
+        if (file) {
+            BITMAPFILEHEADER header = {}; BITMAPINFOHEADER info = {};
+            header.bfType = 0x4d42; header.bfOffBits = sizeof(header) + sizeof(info); header.bfSize = header.bfOffBits + desc.Width * desc.Height * 4;
+            info.biSize = sizeof(info); info.biWidth = (LONG)desc.Width; info.biHeight = -(LONG)desc.Height; info.biPlanes = 1; info.biBitCount = 32; info.biCompression = BI_RGB;
+            fwrite(&header, sizeof(header), 1, file); fwrite(&info, sizeof(info), 1, file);
+            for (UINT row = 0; row < desc.Height; ++row) fwrite((BYTE *)map.pData + row * map.RowPitch, desc.Width * 4, 1, file);
+            fclose(file);
+        }
+    }
     *result = {0, desc.Width, 0, desc.Height, 0};
     for (UINT y = 0; y < desc.Height; ++y) {
         BYTE *row = (BYTE *)map.pData + y * map.RowPitch;
@@ -74,6 +98,7 @@ static HRESULT pixels(IDXGISwapChain *chain, ID3D11Device *device,
 int wmain(int argc, wchar_t **argv)
 {
     CHECK(argc == 3, "arguments: repository, temporary fixture directory");
+
     CHECK(readVersion(argv[1]) == ERROR_SUCCESS && !strncmp(label, "Q Souls 1 v ", 12), "repo VERSION.txt label");
     CreateDirectoryW(argv[2], nullptr);
     CHECK(readVersion(argv[2]) == ERROR_FILE_NOT_FOUND, "missing version rejected");
@@ -89,18 +114,13 @@ int wmain(int argc, wchar_t **argv)
     CHECK(fixture(argv[2], " \t12.34.5\r\n", 11) && readVersion(argv[2]) == ERROR_SUCCESS &&
           !strcmp(label, "Q Souls 1 v 12.34.5"), "trim whitespace and load changed version");
 
-    void *factorySlot = (void *)(CreateFactory)CreateDXGIFactory;
-    void *nativeFactory = factorySlot;
-    CHECK(!configureTitleOverlay(argv[1], &factorySlot, testVisible, testLog, true), "RTSS compatibility initialization");
-    CHECK(factorySlot == nativeFactory && !hookCount && !compileShader, "RTSS path leaves factory import and graphics hooks untouched");
-    CHECK(!initializeTitleOverlay(argv[1], &factorySlot, testVisible, testLog), "production overlay initialization");
-    if (rtssRunning()) CHECK(factorySlot == nativeFactory && !hookCount, "running RTSS detected before installing graphics hooks");
-    if (factorySlot == nativeFactory) CHECK(!configureTitleOverlay(argv[1], &factorySlot, testVisible, testLog, false), "standalone overlay initialization");
+    // The production initializer only patches the installed game's validated
+    // call site. Initialize graphics dependencies here without touching any API.
+    compileShader = (decltype(compileShader))(void *)GetProcAddress(LoadLibraryW(L"d3dcompiler_47.dll"), "D3DCompile");
+    CHECK(compileShader && !readVersion(argv[1]), "isolated renderer dependencies");
+    isVisible = testVisible; writeLog = testLog;
     Com<IDXGIFactory> factory;
-    CHECK(SUCCEEDED(((CreateFactory)factorySlot)(__uuidof(IDXGIFactory), (void **)&factory.p)), "hooked factory creation");
-    // Repeated creation of a shared COM vtable must not chain back into our hook.
-    Com<IDXGIFactory> secondFactory;
-    CHECK(SUCCEEDED(((CreateFactory)factorySlot)(__uuidof(IDXGIFactory), (void **)&secondFactory.p)), "second factory creation");
+    CHECK(SUCCEEDED(CreateDXGIFactory(__uuidof(IDXGIFactory), (void **)&factory.p)), "native factory creation");
     Com<ID3D11Device> device;
     Com<ID3D11DeviceContext> context;
     CHECK(SUCCEEDED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, 0, nullptr, 0,
@@ -115,22 +135,19 @@ int wmain(int argc, wchar_t **argv)
     desc.BufferCount = 1; desc.OutputWindow = window; desc.Windowed = TRUE;
     Com<IDXGISwapChain> chain;
     CHECK(SUCCEEDED(factory->CreateSwapChain(device.p, &desc, &chain.p)), "hooked swap-chain creation");
-    CHECK(original(chain.p, 8), "Present hook installed");
-    // Substitute only the final presentation so tests never display a frame.
-    for (size_t i = 0; i < hookCount; ++i)
-        if (hooks[i].slot == *(void ***)chain.p + 8) hooks[i].original = (void *)testPresent;
-
+    void **nativeTable = *(void ***)chain.p;
+    void *nativePresent = nativeTable[8];
     CHECK(SUCCEEDED(clear(chain.p, device.p, context.p)), "clear target");
     visible = FALSE;
-    CHECK(SUCCEEDED(chain->Present(2, 0)) && presents == 1 && lastInterval == 2 && !lastFlags, "forward Present with original arguments");
+    CHECK(SUCCEEDED(testFrame(chain.p, 2, 0)) && presents == 1 && lastInterval == 2 && !lastFlags, "forward Present with original arguments");
     Pixels before;
     CHECK(SUCCEEDED(pixels(chain.p, device.p, context.p, &before)) && !before.count, "hidden outside title");
     visible = TRUE;
-    CHECK(SUCCEEDED(chain->Present(0, DXGI_PRESENT_TEST)) && presents == 2 && lastFlags == DXGI_PRESENT_TEST, "forward test-only Present");
+    CHECK(SUCCEEDED(testFrame(chain.p, 0, DXGI_PRESENT_TEST)) && presents == 2 && lastFlags == DXGI_PRESENT_TEST, "forward test-only Present");
     CHECK(SUCCEEDED(pixels(chain.p, device.p, context.p, &before)) && !before.count, "test-only Present does not draw");
-    CHECK(SUCCEEDED(chain->Present(0, 0)), "title Present");
+    CHECK(SUCCEEDED(testFrame(chain.p, 0, 0)), "title Present");
     Pixels full;
-    CHECK(SUCCEEDED(pixels(chain.p, device.p, context.p, &full)) && full.count > 100, "label has visible pixels");
+    CHECK(SUCCEEDED(pixels(chain.p, device.p, context.p, &full)) && full.count > 100, "independent title label has visible pixels");
     CHECK(full.minX > 1600 && full.maxX < 1900 && full.maxX > 1880 && full.minY >= 84 && full.minY < 105 && full.maxY < 125, "top-right full-HD placement");
 
     // Sentinel state: the overlay must restore even bindings it never uses.
@@ -210,11 +227,30 @@ int wmain(int argc, wchar_t **argv)
     }
     renderer.reset();
     CHECK(SUCCEEDED(renderer.draw(chain.p)), "recreate renderer after device reset");
+    const int stats[] = {11,10,10,10,10,10,10,11};
+    CHECK(respecBegin(&panelDraft, stats, 1), "prepare Respec rendering fixture");
+    panelVisible = true;
+    setRespecOverlayCallbacks(panelSnapshot, panelFrame);
+    CHECK(SUCCEEDED(clear(chain.p, device.p, context.p)) && SUCCEEDED(testFrame(chain.p, 0, 0)) && frameReports && lastFrameOK, "Respec panel renders and reports health");
+    Pixels panel;
+    wchar_t panelPath[MAX_PATH]; swprintf(panelPath, MAX_PATH, L"%ls\\respec-panel.bmp", argv[2]);
+    CHECK(SUCCEEDED(pixels(chain.p, device.p, context.p, &panel, panelPath)) && panel.count > 2000 && panel.minX > 400 && panel.maxX < 1600, "Respec panel is visible and centered");
+    respecMove(&panelDraft, -1); respecAdjust(&panelDraft, -1);
+    CHECK(SUCCEEDED(testFrame(chain.p, 0, 0)) && strstr(renderer.cachedText, "Faith < 10 >") && strstr(renderer.cachedText, "Free Points: 1"), "panel refreshes cursor and values");
+    void **chainTable = *(void ***)chain.p; void *getBuffer = chainTable[9];
+    DWORD bufferProtection, restoredProtection;
+    CHECK(VirtualProtect(chainTable + 9, sizeof(void *), PAGE_READWRITE, &bufferProtection), "protect standalone failure fixture dispatch slot");
+    chainTable[9] = (void *)failBuffer;
+    CHECK(SUCCEEDED(testFrame(chain.p, 0, 0)) && !lastFrameOK, "renderer failure reports unavailable without breaking presentation");
+    chainTable[9] = getBuffer;
+    CHECK(VirtualProtect(chainTable + 9, sizeof(void *), bufferProtection, &restoredProtection), "restore failure fixture protection");
+    setRespecOverlayCallbacks(nullptr, nullptr);
+    CHECK(*(void ***)chain.p == nativeTable && nativeTable[8] == nativePresent, "all native graphics dispatch remains unchanged");
     renderer.reset();
     chain.reset(); DestroyWindow(window);
     wchar_t fixturePath[MAX_PATH];
     swprintf(fixturePath, MAX_PATH, L"%ls\\VERSION.txt", argv[2]);
     DeleteFileW(fixturePath);
-    puts("PASS: RTSS native presentation compatibility, version loading, hooks, visibility, pixel placement, state restoration, resizing, recreation.");
+    puts("PASS: independent title/Respec rendering, original pixel placement, unchanged native dispatch, state restoration, resizing and recreation.");
     return 0;
 }

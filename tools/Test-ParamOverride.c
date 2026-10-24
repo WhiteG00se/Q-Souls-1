@@ -77,6 +77,16 @@ int wmain(int argc, wchar_t **argv)
     typedef HANDLE (WINAPI *OpenA)(LPCSTR, DWORD, DWORD, LPSECURITY_ATTRIBUTES, DWORD, DWORD, HANDLE);
     typedef DWORD (WINAPI *AttrsW)(LPCWSTR);
     OpenW callW = (OpenW)*wide; OpenA callA = (OpenA)*ansi; AttrsW callInfo = (AttrsW)*info;
+    CHECK(loadRespecOverrides(argv[2]) == ERROR_SUCCESS && respecOverrideCount == 2, "load allowlisted external Respec assets");
+    wchar_t mapped[MAX_PATH];
+    CHECK(!respecAssetName(L"script\\talk\\..\\archive.talkesdbnd.dcx") && !respecAssetName(L"D:\\game\\archive.talkesdbnd.dcx"), "manifest path traversal and absolute paths rejected");
+    CHECK(!mapRespecAssetW(NULL, mapped) && !mapRespecAssetA(NULL, mapped), "null asset paths pass through");
+    CHECK(mapRespecAssetW(L"script/talk/m10_00_00_00.talkesdbnd.dcx", mapped), "relative talk archive mapping");
+    CHECK(!mapRespecAssetW(L"othermsg/ENGLISH/menu.msgbnd.dcx", mapped) && !mapRespecAssetW(L"msg/ENGLISH/menu.msgbnd.dcx.bak", mapped), "asset path boundaries enforced");
+    CHECK(marker(callW(L"Z:\\unavailable\\script\\talk\\m10_00_00_00.talkesdbnd.dcx", GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL)), "absolute talk request redirects outside installed game");
+    CHECK(marker(callA("Z:/unavailable/MSG/english/MENU.MSGBND.DCX", GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL)), "ANSI absolute menu request with case/slash normalization");
+    CHECK(callInfo(L"Z:\\unavailable\\msg\\ENGLISH\\menu.msgbnd.dcx") != INVALID_FILE_ATTRIBUTES, "Respec attribute lookup redirects");
+    CHECK(callW(L"Z:\\unavailable\\msg\\ENGLISH\\menu.msgbnd.dcx", GENERIC_WRITE, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL) == INVALID_HANDLE_VALUE, "Respec writes never redirected");
     CHECK(parameterNameW(L"param/GameParam/GameParam.parambnd.dcx"), "relative path");
     CHECK(parameterNameW(L"C:\\original\\PARAM\\GAMEPARAM\\GAMEPARAM.PARAMBND.DCX"), "absolute path and case");
     CHECK(!parameterNameW(L"C:\\otherparam\\GameParam\\GameParam.parambnd.dcx"), "directory boundary");

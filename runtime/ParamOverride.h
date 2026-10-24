@@ -5,6 +5,7 @@ static HANDLE (WINAPI *parameterCreateW)(LPCWSTR, DWORD, DWORD, LPSECURITY_ATTRI
 static HANDLE (WINAPI *parameterCreateA)(LPCSTR, DWORD, DWORD, LPSECURITY_ATTRIBUTES, DWORD, DWORD, HANDLE);
 static DWORD (WINAPI *parameterAttributesW)(LPCWSTR);
 static volatile LONG parameterOpened;
+#include "RespecOverrides.h"
 
 static BOOL parameterNameW(const wchar_t *path)
 {
@@ -51,6 +52,9 @@ static HANDLE parameterResult(HANDLE result)
 static HANDLE WINAPI openParameterW(LPCWSTR path, DWORD access, DWORD share, LPSECURITY_ATTRIBUTES security,
                                     DWORD disposition, DWORD flags, HANDLE templateFile)
 {
+    wchar_t mapped[MAX_PATH];
+    if (disposition == OPEN_EXISTING && !(access & (GENERIC_WRITE | GENERIC_ALL | DELETE | FILE_WRITE_DATA | FILE_APPEND_DATA)) &&
+        mapRespecAssetW(path, mapped)) return parameterCreateW(mapped, access, share, security, disposition, flags, templateFile);
     if (parameterNameW(path) && disposition == OPEN_EXISTING &&
         !(access & (GENERIC_WRITE | GENERIC_ALL | DELETE | FILE_WRITE_DATA | FILE_APPEND_DATA)))
         return parameterResult(parameterCreateW(parameterPath, access, share, security, disposition, flags, templateFile));
@@ -60,6 +64,9 @@ static HANDLE WINAPI openParameterW(LPCWSTR path, DWORD access, DWORD share, LPS
 static HANDLE WINAPI openParameterA(LPCSTR path, DWORD access, DWORD share, LPSECURITY_ATTRIBUTES security,
                                     DWORD disposition, DWORD flags, HANDLE templateFile)
 {
+    wchar_t mapped[MAX_PATH];
+    if (disposition == OPEN_EXISTING && !(access & (GENERIC_WRITE | GENERIC_ALL | DELETE | FILE_WRITE_DATA | FILE_APPEND_DATA)) &&
+        mapRespecAssetA(path, mapped)) return parameterCreateW(mapped, access, share, security, disposition, flags, templateFile);
     if (parameterNameA(path) && disposition == OPEN_EXISTING &&
         !(access & (GENERIC_WRITE | GENERIC_ALL | DELETE | FILE_WRITE_DATA | FILE_APPEND_DATA)))
         return parameterResult(parameterCreateW(parameterPath, access, share, security, disposition, flags, templateFile));
@@ -68,6 +75,8 @@ static HANDLE WINAPI openParameterA(LPCSTR path, DWORD access, DWORD share, LPSE
 
 static DWORD WINAPI attributesParameterW(LPCWSTR path)
 {
+    wchar_t mapped[MAX_PATH];
+    if (mapRespecAssetW(path, mapped)) return parameterAttributesW(mapped);
     return parameterAttributesW(parameterNameW(path) ? parameterPath : path);
 }
 

@@ -7,3 +7,4 @@
 Features:
 Startup intro is skipped
 All starting classes: SL 1, Vitality 12, every other stat 10
+Bonfire Respec: redistribute base stats; spend all Free Points before leaving

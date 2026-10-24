@@ -12,12 +12,27 @@ New-Item -ItemType Directory -Path $temporary -Force | Out-Null
 $cppCompiler = Join-Path (Split-Path -Parent $Compiler) 'clang++.exe'
 $common = @('--target=x86_64-w64-mingw32', '-O2', '-Wall', '-Wextra', '-Werror')
 $cpp = @('-std=c++17', '-static', '-fno-exceptions', '-fno-rtti')
+& $cppCompiler @common @cpp (Join-Path $PSScriptRoot 'Test-GamePresentation.cpp') -municode -o (Join-Path $temporary 'Test-GamePresentation.exe')
+if ($LASTEXITCODE -ne 0) { throw 'Game presentation test build failed.' }
+& (Join-Path $temporary 'Test-GamePresentation.exe') (Join-Path $game 'DarkSoulsRemastered.exe')
+if ($LASTEXITCODE -ne 0) { throw 'Game presentation tests failed.' }
+& $Compiler @common (Join-Path $PSScriptRoot 'Test-Respec.c') -municode -o (Join-Path $temporary 'Test-Respec.exe')
+if ($LASTEXITCODE -ne 0) { throw 'Respec test build failed.' }
+& (Join-Path $temporary 'Test-Respec.exe') (Join-Path $game 'DarkSoulsRemastered.exe')
+if ($LASTEXITCODE -ne 0) { throw 'Respec tests failed.' }
 & $Compiler @common (Join-Path $PSScriptRoot 'Test-ParamOverride.c') -municode -o (Join-Path $temporary 'Test-ParamOverride.exe')
 if ($LASTEXITCODE -ne 0) { throw 'Parameter redirection test build failed.' }
 $parameterFixture = Join-Path $temporary ([Guid]::NewGuid().ToString())
 $parameterDirectory = Join-Path $parameterFixture '.local\game\param\GameParam'
 New-Item -ItemType Directory -Path $parameterDirectory -Force | Out-Null
 [IO.File]::WriteAllBytes((Join-Path $parameterDirectory 'GameParam.parambnd.dcx'), [Text.Encoding]::ASCII.GetBytes('TEST'))
+$assetFixture = Join-Path $parameterFixture '.local\respec'
+foreach ($relative in @('script\talk\m10_00_00_00.talkesdbnd.dcx', 'msg\ENGLISH\menu.msgbnd.dcx')) {
+    $target = Join-Path $assetFixture $relative
+    New-Item -ItemType Directory -Path (Split-Path -Parent $target) -Force | Out-Null
+    [IO.File]::WriteAllBytes($target, [Text.Encoding]::ASCII.GetBytes('TEST'))
+}
+[IO.File]::WriteAllLines((Join-Path $assetFixture 'overrides.txt'), [string[]]@('script\talk\m10_00_00_00.talkesdbnd.dcx', 'msg\ENGLISH\menu.msgbnd.dcx'), [Text.Encoding]::ASCII)
 & (Join-Path $temporary 'Test-ParamOverride.exe') (Join-Path $game 'DarkSoulsRemastered.exe') $parameterFixture
 if ($LASTEXITCODE -ne 0) { throw 'Parameter redirection tests failed.' }
 & $Compiler @common (Join-Path $PSScriptRoot 'Test-SaveExtension.c') -municode -o (Join-Path $temporary 'Test-SaveExtension.exe')

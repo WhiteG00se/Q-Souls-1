@@ -1,12 +1,14 @@
 #define WIN32_LEAN_AND_MEAN
 #include "TitleOverlay.h"
 #include <d3d11_1.h>
-#include <tlhelp32.h>
+
+
 #include <d3dcompiler.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <wchar.h>
+#include "GamePresentation.h"
 
 namespace {
 template<class T> struct Com {
@@ -22,8 +24,12 @@ template<class T> struct Com {
 char label[64];
 BOOL (*isVisible)();
 void (*writeLog)(const char *);
+BOOL (*respecSnapshot)(char *, size_t);
+void (*respecFrame)(HWND, BOOL);
+
+
 decltype(&D3DCompile) compileShader;
-SRWLOCK renderLock = SRWLOCK_INIT, hookLock = SRWLOCK_INIT;
+SRWLOCK renderLock = SRWLOCK_INIT;
 struct Lock {
     SRWLOCK *lock;
     explicit Lock(SRWLOCK *value) : lock(value) { AcquireSRWLockExclusive(lock); }
@@ -84,6 +90,8 @@ struct Renderer {
     Com<ID3D11SamplerState> sampler;
     Com<ID3D11RasterizerState> raster;
     UINT fontHeight = 0, textWidth = 0, textHeight = 0;
+    char cachedText[1024] = {};
+    bool cachedPanel = false;
 
     void reset()
     {
@@ -111,7 +119,7 @@ struct Renderer {
             "float2(0,1),float2(1,0),float2(1,1)};V v;v.uv=q[i];"
             "v.p=float4(q[i].x*2-1,1-q[i].y*2,0,1);return v;}"
             "Texture2D t:register(t0);SamplerState s:register(s0);"
-            "float4 ps(V v):SV_Target{return float4(0.8,0.8,0.8,t.Sample(s,v.uv).a);}";
+            "float4 ps(V v):SV_Target{return t.Sample(s,v.uv);}";
         Com<ID3DBlob> code;
         hr = compileShader(shader, strlen(shader), nullptr, nullptr, nullptr, "vs", "vs_4_0",
                            D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &code.p, nullptr);
@@ -147,7 +155,7 @@ struct Renderer {
         return current->CreateRasterizerState(&r, &raster.p);
     }
 
-    HRESULT makeText(UINT height)
+    HRESULT makeText(UINT height, const char *content = label, bool panel = false)
     {
         HDC dc = CreateCompatibleDC(nullptr);
         if (!dc) return E_FAIL;
@@ -157,9 +165,9 @@ struct Renderer {
         if (!font) { DeleteDC(dc); return E_FAIL; }
         HGDIOBJ oldFont = SelectObject(dc, font);
         SIZE size = {};
-        BOOL measured = GetTextExtentPoint32A(dc, label, (int)strlen(label), &size);
-        UINT width = measured ? (UINT)size.cx + 4 : 0;
-        UINT rows = measured ? (UINT)size.cy + 2 : 0;
+        BOOL measured = GetTextExtentPoint32A(dc, content, (int)strlen(content), &size);
+        UINT width = panel ? height * 27 : measured ? (UINT)size.cx + 4 : 0;
+        UINT rows = panel ? height * 22 : measured ? (UINT)size.cy + 2 : 0;
         BITMAPINFO info = {};
         info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
         info.bmiHeader.biWidth = (LONG)width; info.bmiHeader.biHeight = -(LONG)rows;
@@ -171,10 +179,18 @@ struct Renderer {
             HGDIOBJ oldBitmap = SelectObject(dc, bitmap);
             memset(pixels, 0, (size_t)width * rows * 4);
             SetTextColor(dc, RGB(255,255,255)); SetBkMode(dc, TRANSPARENT);
-            BOOL drawn = TextOutA(dc, 2, 0, label, (int)strlen(label));
+            BOOL drawn;
+            if (panel) {
+                RECT box = {(LONG)height, (LONG)height, (LONG)(width - height), (LONG)(rows - height)};
+                drawn = DrawTextA(dc, content, -1, &box, DT_LEFT | DT_TOP | DT_NOPREFIX | DT_WORDBREAK) != 0;
+            } else drawn = TextOutA(dc, 2, 0, content, (int)strlen(content));
             GdiFlush();
             BYTE *bytes = (BYTE *)pixels;
-            for (size_t i = 0; i < (size_t)width * rows; ++i) bytes[i*4+3] = bytes[i*4];
+            for (size_t i = 0; i < (size_t)width * rows; ++i) {
+                BYTE shade = bytes[i*4];
+                bytes[i*4] = bytes[i*4+1] = bytes[i*4+2] = (BYTE)(shade * 0.8f);
+                bytes[i*4+3] = panel ? 240 : shade;
+            }
             D3D11_TEXTURE2D_DESC desc = {};
             desc.Width = width; desc.Height = rows; desc.MipLevels = desc.ArraySize = 1;
             desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM; desc.SampleDesc.Count = 1;
@@ -189,11 +205,11 @@ struct Renderer {
             SelectObject(dc, oldBitmap); DeleteObject(bitmap);
         }
         SelectObject(dc, oldFont); DeleteObject(font); DeleteDC(dc);
-        if (SUCCEEDED(hr)) { fontHeight = height; textWidth = width; textHeight = rows; }
+        if (SUCCEEDED(hr)) { fontHeight = height; textWidth = width; textHeight = rows; snprintf(cachedText, sizeof(cachedText), "%s", content); cachedPanel = panel; }
         return hr;
     }
 
-    HRESULT draw(IDXGISwapChain *chain)
+    HRESULT draw(IDXGISwapChain *chain, const char *content = label, bool panel = false)
     {
         Com<ID3D11Device> current;
         HRESULT hr = chain->GetDevice(__uuidof(ID3D11Device), (void **)&current.p);
@@ -210,8 +226,8 @@ struct Renderer {
         buffer->GetDesc(&desc);
         if (!desc.Width || !desc.Height) return S_FALSE;
         Layout place = layout(desc.Width, desc.Height);
-        if (place.font != fontHeight || !text.p) {
-            hr = makeText(place.font);
+        if (place.font != fontHeight || !text.p || panel != cachedPanel || strcmp(content, cachedText)) {
+            hr = makeText(place.font, content, panel);
             if (FAILED(hr)) return hr;
         }
         Com<ID3D11RenderTargetView> target;
@@ -224,6 +240,7 @@ struct Renderer {
         context->RSSetState(raster.p);
         D3D11_VIEWPORT viewport = {place.right - (float)textWidth, place.top,
                                   (float)textWidth, (float)textHeight, 0, 1};
+        if (panel) { viewport.TopLeftX = ((float)desc.Width - textWidth) * 0.5f; viewport.TopLeftY = ((float)desc.Height - textHeight) * 0.5f; }
         context->RSSetViewports(1, &viewport);
         context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         context->VSSetShader(vs.p, nullptr, 0);
@@ -237,13 +254,7 @@ struct Renderer {
     }
 } renderer;
 
-using CreateFactory = HRESULT (WINAPI *)(REFIID, void **);
-using CreateChain = HRESULT (STDMETHODCALLTYPE *)(IDXGIFactory *, IUnknown *, DXGI_SWAP_CHAIN_DESC *, IDXGISwapChain **);
-using Present = HRESULT (STDMETHODCALLTYPE *)(IDXGISwapChain *, UINT, UINT);
-CreateFactory realFactory;
-struct Hook { void **slot; void *original; };
-Hook hooks[32];
-size_t hookCount;
+void **presentationSlot;
 
 void report(HRESULT hr)
 {
@@ -256,109 +267,53 @@ void report(HRESULT hr)
     last = hr;
 }
 
-// Patch only the COM dispatch slot, chaining any previously installed overlay.
-HRESULT hook(void **slot, void *replacement)
+HRESULT drawFrame(IDXGISwapChain *chain)
 {
-    Lock guard(&hookLock);
-    for (size_t i = 0; i < hookCount; ++i) if (hooks[i].slot == slot) return S_OK;
-    if (hookCount == sizeof(hooks) / sizeof(*hooks)) return E_OUTOFMEMORY;
-    DWORD old, ignored;
-    if (!VirtualProtect(slot, sizeof(*slot), PAGE_READWRITE, &old)) return HRESULT_FROM_WIN32(GetLastError());
-    hooks[hookCount++] = {slot, *slot};
-    InterlockedExchangePointer(slot, replacement);
-    if (!VirtualProtect(slot, sizeof(*slot), old, &ignored)) return HRESULT_FROM_WIN32(GetLastError());
-    return S_OK;
-}
-
-void *original(void *object, size_t index)
-{
-    void **slot = *(void ***)object + index;
-    Lock guard(&hookLock);
-    for (size_t i = 0; i < hookCount; ++i) if (hooks[i].slot == slot) return hooks[i].original;
-    return nullptr;
-}
-
-HRESULT STDMETHODCALLTYPE present(IDXGISwapChain *chain, UINT interval, UINT flags)
-{
-    auto next = (Present)original(chain, 8);
-    if (!next) return E_UNEXPECTED;
-    if (!(flags & DXGI_PRESENT_TEST) && isVisible && isVisible()) {
         Lock guard(&renderLock);
-        report(renderer.draw(chain));
-    }
-    HRESULT hr = next(chain, interval, flags);
-    if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET) {
-        Lock guard(&renderLock);
+        char content[1024];
+        bool panel = respecSnapshot && respecSnapshot(content, sizeof(content));
+        HRESULT drawn = S_OK;
+        if (panel) drawn = renderer.draw(chain, content, true);
+        else if (isVisible && isVisible()) drawn = renderer.draw(chain);
+        else if (respecFrame && !renderer.raster.p) {
+            Com<ID3D11Device> current;
+            drawn = chain->GetDevice(__uuidof(ID3D11Device), (void **)&current.p);
+            if (SUCCEEDED(drawn)) drawn = renderer.initialize(current.p);
+        }
+        report(drawn);
+        if (respecFrame) { DXGI_SWAP_CHAIN_DESC desc = {}; if (SUCCEEDED(chain->GetDesc(&desc))) respecFrame(desc.OutputWindow, SUCCEEDED(drawn)); }
+    if (drawn == DXGI_ERROR_DEVICE_REMOVED || drawn == DXGI_ERROR_DEVICE_RESET) {
         renderer.reset();
     }
-    return hr;
+    return drawn;
 }
 
-HRESULT STDMETHODCALLTYPE createChain(IDXGIFactory *factory, IUnknown *device,
-                                      DXGI_SWAP_CHAIN_DESC *desc, IDXGISwapChain **chain)
-{
-    auto next = (CreateChain)original(factory, 10);
-    if (!next) return E_UNEXPECTED;
-    HRESULT hr = next(factory, device, desc, chain);
-    if (SUCCEEDED(hr) && chain && *chain) {
-        HRESULT hooked = hook(*(void ***)*chain + 8, (void *)present);
-        if (FAILED(hooked) && writeLog) writeLog("Could not hook title overlay presentation.");
-    }
-    return hr;
-}
-
-HRESULT WINAPI createFactory(REFIID iid, void **factory)
-{
-    HRESULT hr = realFactory(iid, factory);
-    if (SUCCEEDED(hr) && factory && *factory) {
-        HRESULT hooked = hook(*(void ***)*factory + 10, (void *)createChain);
-        if (FAILED(hooked) && writeLog) writeLog("Could not hook title overlay swap-chain creation.");
-    }
-    return hr;
-}
-// Do not replace DXGI dispatch methods while RTSS is preparing delayed
-// injection: its probe must see native Present to locate the hook target.
-bool rtssRunning()
-{
-    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-    if (snapshot == INVALID_HANDLE_VALUE) return false;
-    PROCESSENTRY32W entry = {};
-    entry.dwSize = sizeof(entry);
-    bool found = false;
-    if (Process32FirstW(snapshot, &entry)) do {
-        if (!_wcsicmp(entry.szExeFile, L"RTSS.exe")) { found = true; break; }
-    } while (Process32NextW(snapshot, &entry));
-    CloseHandle(snapshot);
-    return found || GetModuleHandleW(L"RTSSHooks64.dll");
-}
-
-DWORD configureTitleOverlay(const wchar_t *root, void **factorySlot,
-                                        BOOL (*visible)(void), void (*log)(const char *), bool nativePresentation)
+DWORD configureTitleOverlay(const wchar_t *root, BYTE *site,
+                            BOOL (*visible)(void), void (*log)(const char *))
 {
     DWORD error = readVersion(root);
     if (error) { log("Cannot read VERSION.txt: expected a numeric version such as 0.3."); return error; }
-    if (nativePresentation) {
-        log(label);
-        log("RTSS detected: title version label disabled to preserve MSI Afterburner overlay hooking.");
-        return ERROR_SUCCESS;
-    }
+    if (!site) return ERROR_REVISION_MISMATCH;
     HMODULE compiler = LoadLibraryExW(L"d3dcompiler_47.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
     if (!compiler) return GetLastError();
     compileShader = (decltype(compileShader))(void *)GetProcAddress(compiler, "D3DCompile");
-    if (!compileShader || !factorySlot) return ERROR_PROC_NOT_FOUND;
+    if (!compileShader) return ERROR_PROC_NOT_FOUND;
     isVisible = visible; writeLog = log;
-    realFactory = (CreateFactory)*factorySlot;
-    DWORD old, ignored;
-    if (!VirtualProtect(factorySlot, sizeof(*factorySlot), PAGE_READWRITE, &old)) return GetLastError();
-    InterlockedExchangePointer(factorySlot, (void *)createFactory);
-    if (!VirtualProtect(factorySlot, sizeof(*factorySlot), old, &ignored)) return GetLastError();
+    error = patchGamePresentation(site, (void *)drawFrame, &presentationSlot);
+    if (error) return error;
     log(label);
+    log("Pre-Present drawing connected; original game Present instruction and caller are unchanged. Title label uses the original top-right layout.");
     return ERROR_SUCCESS;
 }
 } // namespace
 
-extern "C" DWORD initializeTitleOverlay(const wchar_t *root, void **factorySlot,
-                                        BOOL (*visible)(void), void (*log)(const char *))
+extern "C" void setRespecOverlayCallbacks(BOOL (*snapshot)(char *, size_t), void (*frame)(HWND, BOOL))
 {
-    return configureTitleOverlay(root, factorySlot, visible, log, rtssRunning());
+    Lock guard(&renderLock);
+    respecSnapshot = snapshot; respecFrame = frame;
+}
+
+extern "C" DWORD initializeTitleOverlay(const wchar_t *root, BOOL (*visible)(void), void (*log)(const char *))
+{
+    return configureTitleOverlay(root, findGamePresentation((BYTE *)GetModuleHandleW(nullptr)), visible, log);
 }

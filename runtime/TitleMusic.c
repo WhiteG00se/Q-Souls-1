@@ -602,6 +602,7 @@ static BOOL replaceImport(void **slot, void *replacement)
 
 #include "ParamOverride.h"
 #include "SaveExtension.h"
+#include "RespecRuntime.h"
 
 // Explicit initialization lets the launcher report a failure before starting the game.
 __declspec(dllexport) DWORD WINAPI InitializeQSouls(void *unused)
@@ -621,15 +622,18 @@ __declspec(dllexport) DWORD WINAPI InitializeQSouls(void *unused)
         return ERROR_BUFFER_OVERFLOW;
     DWORD parameterError = initializeParamOverride(root);
     if (parameterError) return parameterError;
+    DWORD assetError = loadRespecOverrides(root);
+    if (assetError) return assetError;
     DWORD saveError = initializeSaveExtension();
     if (saveError) return saveError;
     readStartupAudio();
     cameraGlobal = findCameraGlobal();
     optionsGlobal = findOptionsGlobal();
     if (!cameraGlobal || !optionsGlobal) return ERROR_REVISION_MISMATCH;
-    DWORD overlayError = initializeTitleOverlay(root, findImport("dxgi.dll", "CreateDXGIFactory"),
-                                                titleOverlayVisible, logMessage);
+    DWORD overlayError = initializeTitleOverlay(root, titleOverlayVisible, logMessage);
     if (overlayError) return overlayError;
+    DWORD respecError = initializeRespec(gameplayLoaded);
+    if (respecError) return respecError;
     void **openSlot = findImport("binkw64.dll", "BinkOpen"), **closeSlot = findImport("binkw64.dll", "BinkClose");
     HMODULE bink = GetModuleHandleW(L"binkw64.dll");
     soundOnOff = (void *)GetProcAddress(bink, "BinkSetSoundOnOff");
