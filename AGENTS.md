@@ -12,3 +12,6 @@
 - For uncommitted changes, compare the version in `VERSION.txt` with its value in `HEAD`. If it is not already higher, increment its minor version once.
 - Never commit or push unless requested.
 - Only the user performs E2E testing. Do not launch or control the game for testing; limit agent checks to builds, static checks, and isolated tests.
+- Preserve the user-verified v0.15 RTSS fix: render through the existing pre-Present bridge with explicit D3D11 pipeline state save/restore. Do not use `CreateDeviceContextState`/`SwapDeviceContextState`; they made RTSS detect D3D10 instead of D3D11 and broke Afterburner's OSD.
+- Keep F12 working, Respec intact, and the title label independently visible with its original font/placement. Never couple mod UI to RTSS shared-memory OSD visibility or change RTSS/Afterburner settings as a workaround.
+- After rendering/input changes, rebuild the runtime and run `tools/Test-Runtime.ps1` plus `tools/Test-RTSS.ps1` with RTSS running (must report D3D11/API 7 and measured frames). These checks do not prove in-game F12 compatibility; request user E2E verification before declaring it confirmed.

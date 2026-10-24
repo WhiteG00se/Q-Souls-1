@@ -1,6 +1,6 @@
 #define WIN32_LEAN_AND_MEAN
 #include "TitleOverlay.h"
-#include <d3d11_1.h>
+#include <d3d11.h>
 
 
 #include <d3dcompiler.h>
@@ -79,10 +79,77 @@ Layout layout(UINT width, UINT height)
     return {font < 8 ? 8 : font, right, top};
 }
 
+// Save only the pipeline state this renderer changes. Context-state swapping
+// exposes a different emulated device to overlay hooks (RTSS detects D3D10).
+struct PipelineState {
+    ID3D11DeviceContext *context;
+    ID3D11RenderTargetView *targets[D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT] = {};
+    UINT targetCount = 0;
+    ID3D11UnorderedAccessView *uavs[D3D11_PS_CS_UAV_REGISTER_COUNT] = {};
+    Com<ID3D11DepthStencilView> depth;
+    Com<ID3D11BlendState> blend;
+    FLOAT factors[4]; UINT mask;
+    Com<ID3D11RasterizerState> raster;
+    D3D11_VIEWPORT viewports[D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE];
+    UINT viewportCount = D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE;
+    D3D11_PRIMITIVE_TOPOLOGY topology;
+    Com<ID3D11Predicate> predicate; BOOL predicateValue;
+    Com<ID3D11ShaderResourceView> resource;
+    Com<ID3D11SamplerState> sampler;
+    Com<ID3D11VertexShader> vs;
+    Com<ID3D11PixelShader> ps;
+    Com<ID3D11GeometryShader> gs;
+    Com<ID3D11HullShader> hs;
+    Com<ID3D11DomainShader> ds;
+    struct Instances {
+        ID3D11ClassInstance *items[256] = {}; UINT count = 256;
+        ~Instances() { for (UINT i = 0; i < count; ++i) if (items[i]) items[i]->Release(); }
+    } vi, pi, gi, hi, di;
+    explicit PipelineState(ID3D11DeviceContext *value) : context(value)
+    {
+        context->OMGetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, targets, &depth.p);
+        for (UINT i = 0; i < D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT; ++i) if (targets[i]) targetCount = i + 1;
+        context->OMGetRenderTargetsAndUnorderedAccessViews(0, nullptr, nullptr,
+            0, D3D11_PS_CS_UAV_REGISTER_COUNT, uavs);
+        context->OMGetBlendState(&blend.p, factors, &mask);
+        context->RSGetState(&raster.p);
+        context->RSGetViewports(&viewportCount, viewports);
+        context->IAGetPrimitiveTopology(&topology);
+        context->GetPredication(&predicate.p, &predicateValue);
+        context->PSGetShaderResources(0, 1, &resource.p);
+        context->PSGetSamplers(0, 1, &sampler.p);
+        context->VSGetShader(&vs.p, vi.items, &vi.count);
+        context->PSGetShader(&ps.p, pi.items, &pi.count);
+        context->GSGetShader(&gs.p, gi.items, &gi.count);
+        context->HSGetShader(&hs.p, hi.items, &hi.count);
+        context->DSGetShader(&ds.p, di.items, &di.count);
+    }
+    ~PipelineState()
+    {
+        UINT counts[D3D11_PS_CS_UAV_REGISTER_COUNT];
+        for (auto &count : counts) count = ~0u; // Preserve append/consume counters.
+        context->OMSetRenderTargetsAndUnorderedAccessViews(targetCount, targets, depth.p,
+            targetCount, D3D11_PS_CS_UAV_REGISTER_COUNT - targetCount, uavs + targetCount, counts);
+        context->OMSetBlendState(blend.p, factors, mask);
+        context->RSSetState(raster.p);
+        context->RSSetViewports(viewportCount, viewports);
+        context->IASetPrimitiveTopology(topology);
+        context->SetPredication(predicate.p, predicateValue);
+        context->VSSetShader(vs.p, vi.items, vi.count);
+        context->PSSetShader(ps.p, pi.items, pi.count);
+        context->GSSetShader(gs.p, gi.items, gi.count);
+        context->HSSetShader(hs.p, hi.items, hi.count);
+        context->DSSetShader(ds.p, di.items, di.count);
+        context->PSSetShaderResources(0, 1, &resource.p);
+        context->PSSetSamplers(0, 1, &sampler.p);
+        for (auto target : targets) if (target) target->Release();
+        for (auto uav : uavs) if (uav) uav->Release();
+    }
+};
+
 struct Renderer {
     Com<ID3D11Device> device;
-    Com<ID3D11DeviceContext1> context;
-    Com<ID3DDeviceContextState> state;
+    Com<ID3D11DeviceContext> context;
     Com<ID3D11VertexShader> vs;
     Com<ID3D11PixelShader> ps;
     Com<ID3D11ShaderResourceView> text;
@@ -96,23 +163,15 @@ struct Renderer {
     void reset()
     {
         text.reset(); vs.reset(); ps.reset(); blend.reset(); sampler.reset(); raster.reset();
-        state.reset(); context.reset(); device.reset(); fontHeight = 0;
+        context.reset(); device.reset(); fontHeight = 0;
     }
 
     HRESULT initialize(ID3D11Device *current)
     {
         reset();
         device.p = current; current->AddRef();
-        Com<ID3D11Device1> newer;
-        HRESULT hr = current->QueryInterface(__uuidof(ID3D11Device1), (void **)&newer.p);
-        if (FAILED(hr)) return hr;
-        newer->GetImmediateContext1(&context.p);
-        D3D_FEATURE_LEVEL feature = current->GetFeatureLevel();
-        UINT flags = (current->GetCreationFlags() & D3D11_CREATE_DEVICE_SINGLETHREADED) ?
-            D3D11_1_CREATE_DEVICE_CONTEXT_STATE_SINGLETHREADED : 0;
-        hr = newer->CreateDeviceContextState(flags, &feature, 1, D3D11_SDK_VERSION,
-                                             __uuidof(ID3D11Device), nullptr, &state.p);
-        if (FAILED(hr)) return hr;
+        current->GetImmediateContext(&context.p);
+        HRESULT hr;
         const char *shader =
             "struct V{float4 p:SV_Position;float2 uv:TEXCOORD;};"
             "V vs(uint i:SV_VertexID){float2 q[6]={float2(0,0),float2(1,0),float2(0,1),"
@@ -233,8 +292,8 @@ struct Renderer {
         Com<ID3D11RenderTargetView> target;
         hr = current->CreateRenderTargetView(buffer.p, nullptr, &target.p);
         if (FAILED(hr)) return hr;
-        Com<ID3DDeviceContextState> previous;
-        context->SwapDeviceContextState(state.p, &previous.p);
+        PipelineState previous(context.p);
+        context->SetPredication(nullptr, FALSE);
         context->OMSetRenderTargets(1, &target.p, nullptr);
         context->OMSetBlendState(blend.p, nullptr, ~0u);
         context->RSSetState(raster.p);
@@ -243,13 +302,15 @@ struct Renderer {
         if (panel) { viewport.TopLeftX = ((float)desc.Width - textWidth) * 0.5f; viewport.TopLeftY = ((float)desc.Height - textHeight) * 0.5f; }
         context->RSSetViewports(1, &viewport);
         context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        context->GSSetShader(nullptr, nullptr, 0);
+        context->HSSetShader(nullptr, nullptr, 0);
+        context->DSSetShader(nullptr, nullptr, 0);
         context->VSSetShader(vs.p, nullptr, 0);
         context->PSSetShader(ps.p, nullptr, 0);
         context->PSSetShaderResources(0, 1, &text.p);
         context->PSSetSamplers(0, 1, &sampler.p);
         context->Draw(6, 0);
-        context->ClearState(); // Also removes the overlay state's reference to the backbuffer.
-        context->SwapDeviceContextState(previous.p, nullptr);
+        // PipelineState restores the game bindings and releases our backbuffer target.
         return S_OK;
     }
 } renderer;

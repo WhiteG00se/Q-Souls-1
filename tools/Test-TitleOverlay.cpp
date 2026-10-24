@@ -170,7 +170,32 @@ int wmain(int argc, wchar_t **argv)
     context->VSSetShader(renderer.vs.p, nullptr, 0);
     context->PSSetShaderResources(3, 1, &renderer.text.p);
     context->VSSetSamplers(4, 1, &renderer.sampler.p);
+    // A game geometry shader that emits no vertices must not hide our UI.
+    const char *geometry = "struct V{float4 p:SV_Position;float2 uv:TEXCOORD;};"
+        "[maxvertexcount(3)]void main(triangle V v[3],inout TriangleStream<V> stream){}";
+    Com<ID3DBlob> geometryCode;
+    Com<ID3D11GeometryShader> gameGeometry;
+    CHECK(SUCCEEDED(compileShader(geometry, strlen(geometry), nullptr, nullptr, nullptr,
+        "main", "gs_4_0", 0, 0, &geometryCode.p, nullptr)) &&
+        SUCCEEDED(device->CreateGeometryShader(geometryCode->GetBufferPointer(),
+        geometryCode->GetBufferSize(), nullptr, &gameGeometry.p)), "game geometry-shader fixture");
+    context->GSSetShader(gameGeometry.p, nullptr, 0);
+    Com<ID3D11Predicate> gamePredicate;
+    D3D11_QUERY_DESC predicateDesc = {D3D11_QUERY_OCCLUSION_PREDICATE, 0};
+    CHECK(SUCCEEDED(device->CreatePredicate(&predicateDesc, &gamePredicate.p)), "game predication fixture");
+    context->SetPredication(gamePredicate.p, FALSE);
+    CHECK(SUCCEEDED(clear(chain.p, device.p, context.p)), "clear before pipeline restoration check");
     CHECK(SUCCEEDED(renderer.draw(chain.p)), "draw with existing game state");
+    Com<ID3D11GeometryShader> restoredGeometry;
+    context->GSGetShader(&restoredGeometry.p, nullptr, nullptr);
+    CHECK(restoredGeometry.p == gameGeometry.p, "game geometry shader restored");
+    Com<ID3D11Predicate> restoredPredicate; BOOL predicateValue = TRUE;
+    context->GetPredication(&restoredPredicate.p, &predicateValue);
+    CHECK(restoredPredicate.p == gamePredicate.p && !predicateValue, "game predicate and comparison restored");
+    context->SetPredication(nullptr, FALSE);
+    Pixels pipelinePixels;
+    CHECK(SUCCEEDED(pixels(chain.p, device.p, context.p, &pipelinePixels)) && pipelinePixels.count > 100,
+          "label draws despite game geometry shader and predication");
     Com<ID3D11RenderTargetView> gotTarget;
     context->OMGetRenderTargets(1, &gotTarget.p, nullptr);
     CHECK(gotTarget.p == sentinelTarget.p, "render target restored");
