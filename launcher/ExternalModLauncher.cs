@@ -123,12 +123,18 @@ public static class ExternalModLauncher
         bool success = false;
         try
         {
+            IntPtr runtimeModule = IntPtr.Zero;
+            string runtimeDll = null;
             foreach (string dll in dlls)
             {
                 IntPtr module = LoadMod(process, dll);
                 if (string.Equals(Path.GetFileName(dll), "QSoulsRuntime.dll", StringComparison.OrdinalIgnoreCase))
-                    InitializeRuntime(process.process, module, dll);
+                {
+                    runtimeModule = module; runtimeDll = dll;
+                }
             }
+            // Install save routing after optional mods have loaded, before game code runs.
+            if (runtimeDll != null) InitializeRuntime(process.process, runtimeModule, runtimeDll);
             Check(ResumeThread(process.thread) != uint.MaxValue, "Could not resume the game.");
             if (WaitForSingleObject(process.process, 2000) == 0)
             {

@@ -96,6 +96,10 @@ try {
     Initialize-Respec -GamePath $gamePath -Repository $repository -ValidateOnly:$CheckOnly
     Initialize-StartingClasses -GamePath $gamePath -RuntimeRoot $runtimeRoot -ValidateOnly:$CheckOnly
     if ($CheckOnly) { Write-Host 'Checks passed; game not launched.'; exit 0 }
+    if ($useSeamless) {
+        . (Join-Path $PSScriptRoot 'Initialize-SeamlessRuntime.ps1')
+        Initialize-SeamlessRuntime -OptionalRoot $optionalRoot -RuntimeRoot $runtimeRoot
+    }
     $assetDirectories = @(Get-ChildItem -LiteralPath $gamePath -Directory |
         Where-Object { $_.Name -notin @('SeamlessCoop', 'param') })
     foreach ($directory in $assetDirectories) {
@@ -112,13 +116,15 @@ try {
     $previousAppId = $env:SteamAppId
     $previousGameId = $env:SteamGameId
     $previousAudio = $env:QSOULS_SAVED_AUDIO
+    $previousSeamless = $env:QSOULS_SEAMLESS
     $previousExtension = $env:QSOULS_SAVE_EXTENSION
     $previousSaveRoot = $env:QSOULS_SAVE_ROOT
     try {
         $env:SteamAppId = '570940'
         $env:SteamGameId = '570940'
         $env:QSOULS_SAVED_AUDIO = $savedAudio -join ','
-        $env:QSOULS_SAVE_EXTENSION = if ($useSeamless) { 'sl2' } else { $SaveExtension }
+        $env:QSOULS_SEAMLESS = if ($useSeamless) { '1' } else { '0' }
+        $env:QSOULS_SAVE_EXTENSION = $SaveExtension
         $env:QSOULS_SAVE_ROOT = Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'NBGI\DARK SOULS REMASTERED'
         $gameId = [ExternalModLauncher]::Launch((Join-Path $gamePath 'DarkSoulsRemastered.exe'), $runtimeRoot, [string[]]$dlls)
         Write-Host "Mod loaded. Game process: $gameId"
@@ -127,6 +133,7 @@ try {
         $env:SteamAppId = $previousAppId
         $env:SteamGameId = $previousGameId
         $env:QSOULS_SAVED_AUDIO = $previousAudio
+        $env:QSOULS_SEAMLESS = $previousSeamless
         $env:QSOULS_SAVE_EXTENSION = $previousExtension
         $env:QSOULS_SAVE_ROOT = $previousSaveRoot
     }

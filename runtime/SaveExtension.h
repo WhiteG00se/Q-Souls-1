@@ -1,7 +1,7 @@
-// The solo game keeps its native .sl2 names internally; redirect only its save-file I/O.
-// Seamless performs its own redirection from the selected INI setting instead.
+// Route native .sl2 and Seamless .co2 save I/O to the launcher selection.
 #define SAVE_PATH_CAPACITY 1024
 static wchar_t selectedSaveExtension[121], selectedSaveRoot[SAVE_PATH_CAPACITY];
+static BOOL seamlessSavePaths;
 static HANDLE (WINAPI *saveCreateW)(LPCWSTR, DWORD, DWORD, LPSECURITY_ATTRIBUTES, DWORD, DWORD, HANDLE);
 static HANDLE (WINAPI *saveCreateA)(LPCSTR, DWORD, DWORD, LPSECURITY_ATTRIBUTES, DWORD, DWORD, HANDLE);
 static DWORD (WINAPI *saveAttributesW)(LPCWSTR);
@@ -16,11 +16,11 @@ static int mapSaveW(const wchar_t *path, wchar_t output[SAVE_PATH_CAPACITY])
     const wchar_t *name = path;
     for (const wchar_t *p = path; *p; ++p) if (*p == L'\\' || *p == L'/') name = p + 1;
     const wchar_t *extension = NULL;
-    if (!_wcsicmp(name, L"*.sl2")) extension = name + 1;
+    if (!_wcsicmp(name, L"*.sl2") || (seamlessSavePaths && !_wcsicmp(name, L"*.co2"))) extension = name + 1;
     else if (!_wcsnicmp(name, L"DRAKS", 5)) {
         const wchar_t *p = name + 5;
         while ((*p >= L'0' && *p <= L'9') || *p == L'*' || *p == L'?') ++p;
-        if (p > name + 5 && !_wcsnicmp(p, L".sl2", 4) && (!p[4] || p[4] == L'.')) extension = p;
+        if (p > name + 5 && (!_wcsnicmp(p, L".sl2", 4) || (seamlessSavePaths && !_wcsnicmp(p, L".co2", 4))) && (!p[4] || p[4] == L'.')) extension = p;
     }
     if (!extension) return 0;
     wchar_t absolute[SAVE_PATH_CAPACITY];
@@ -107,7 +107,9 @@ static DWORD initializeSaveExtension(void)
         wchar_t c = selectedSaveExtension[i];
         if (!((c >= L'a' && c <= L'z') || (c >= L'A' && c <= L'Z') || (c >= L'0' && c <= L'9'))) return ERROR_INVALID_PARAMETER;
     }
-    if (!_wcsicmp(selectedSaveExtension, L"sl2")) return ERROR_SUCCESS;
+    wchar_t seamless[2];
+    seamlessSavePaths = GetEnvironmentVariableW(L"QSOULS_SEAMLESS", seamless, 2) == 1 && seamless[0] == L'1';
+    if (!seamlessSavePaths && !_wcsicmp(selectedSaveExtension, L"sl2")) return ERROR_SUCCESS;
     wchar_t root[SAVE_PATH_CAPACITY];
     length = GetEnvironmentVariableW(L"QSOULS_SAVE_ROOT", root, SAVE_PATH_CAPACITY);
     if (!length || length >= SAVE_PATH_CAPACITY) return ERROR_INVALID_PARAMETER;
@@ -122,6 +124,6 @@ static DWORD initializeSaveExtension(void)
     saveCreateW = (void *)*slots[0]; saveCreateA = (void *)*slots[1]; saveAttributesW = (void *)*slots[2];
     saveDeleteW = (void *)*slots[3]; saveDeleteA = (void *)*slots[4]; saveMoveW = (void *)*slots[5]; saveMoveA = (void *)*slots[6]; saveFindW = (void *)*slots[7];
     for (size_t i = 0; i < 8; ++i) if (!replaceImport(slots[i], hooks[i])) return ERROR_WRITE_FAULT;
-    logMessage("Selected solo save extension is active; vanilla saves are kept separate.");
+    logMessage("Launcher-selected save extension routing is active.");
     return ERROR_SUCCESS;
 }

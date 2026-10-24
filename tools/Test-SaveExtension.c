@@ -71,6 +71,7 @@ int wmain(int argc, wchar_t **argv)
         CHECK(slot, "save I/O imports exist in installed game");
         CHECK(replaceImport(slot, (void *)GetProcAddress(kernel, names[i])), "bind isolated imports to real APIs");
     }
+    SetEnvironmentVariableW(L"QSOULS_SEAMLESS", L"0");
     SetEnvironmentVariableW(L"QSOULS_SAVE_EXTENSION", L"sl2");
     CHECK(initializeSaveExtension() == ERROR_SUCCESS, "sl2 default needs no hooks");
     CHECK(*findImport("KERNEL32.dll", "CreateFileW") == (void *)CreateFileW, "default leaves save imports untouched");
@@ -111,8 +112,39 @@ int wmain(int argc, wchar_t **argv)
     CHECK(content(original, "VANILLA"), "delete did not touch vanilla");
     wcscpy(selectedSaveExtension, L"mySave9");
     CHECK(mapSaveW(original, mapped) == 1 && wcsstr(mapped, L"DRAKS0005.mySave9"), "custom extension mapping");
+    // Rebind the private image before testing a second initialization.
+    for (size_t i = 0; i < 8; ++i)
+        CHECK(replaceImport(findImport("KERNEL32.dll", names[i]), (void *)GetProcAddress(kernel, names[i])), "reset fixture imports");
+    SetEnvironmentVariableW(L"QSOULS_SEAMLESS", L"1");
+    SetEnvironmentVariableW(L"QSOULS_SAVE_EXTENSION", L"sl2");
+    CHECK(initializeSaveExtension() == ERROR_SUCCESS, "Seamless sl2 selection installs hooks");
+    CHECK(*findImport("KERNEL32.dll", "CreateFileW") == (void *)saveOpenW, "Seamless sl2 does not skip routing");
+    swprintf(selected, SAVE_PATH_CAPACITY, L"%ls\\DRAKS0005.co2", argv[2]);
+    file = CreateFileW(selected, GENERIC_WRITE, 0, NULL, CREATE_NEW, 0, NULL);
+    CHECK(file != INVALID_HANDLE_VALUE, "create separate Seamless save marker");
+    CHECK(WriteFile(file, "COOP", 4, &written, NULL), "write co2 marker"); CloseHandle(file);
+    CHECK(mapSaveW(selected, mapped) == 1 && !wcscmp(mapped, original), "Seamless co2 maps to selected sl2");
+    file = saveOpenW(selected, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    CHECK(file != INVALID_HANDLE_VALUE, "open Seamless path through selected sl2");
+    char marker[8] = {0}; DWORD read;
+    CHECK(ReadFile(file, marker, 7, &read, NULL) && !strcmp(marker, "VANILLA"), "co2 request reads sl2 contents"); CloseHandle(file);
+    swprintf(backup, SAVE_PATH_CAPACITY, L"%ls\\DRAKS0005.co2.bak", argv[2]);
+    CHECK(saveRenameW(selected, backup), "Seamless rename routes to sl2 backup");
+    CHECK(content(selected, "COOP"), "Seamless co2 file remains untouched");
+    file = saveOpenW(selected, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    CHECK(file == INVALID_HANDLE_VALUE && GetLastError() == ERROR_FILE_NOT_FOUND, "missing sl2 never falls back to existing co2");
+    CHECK(saveRenameW(backup, selected), "restore selected sl2 fixture");
+    swprintf(backup, SAVE_PATH_CAPACITY, L"%ls\\*.co2", argv[2]);
+    search = saveSearchW(backup, &data);
+    CHECK(search != INVALID_HANDLE_VALUE && !_wcsicmp(data.cFileName, L"DRAKS0005.sl2"), "Seamless enumeration routes to sl2"); FindClose(search);
+    wcscpy(selectedSaveExtension, L"mySave9");
+    CHECK(mapSaveW(selected, mapped) == 1 && wcsstr(mapped, L"DRAKS0005.mySave9"), "Seamless custom selection");
+    CHECK(mapSaveW(L"Z:\\not-the-save-root\\DRAKS0005.co2", mapped) == 0, "Seamless outside-root paths untouched");
+    wcscpy(selectedSaveExtension, L"co2");
+    CHECK(mapSaveW(selected, mapped) == 1 && !wcscmp(mapped, selected), "Seamless co2 selection remains co2");
+    CHECK(DeleteFileW(selected), "remove separate Seamless test fixture");
     CHECK(DeleteFileW(original), "remove vanilla test fixture only");
     VirtualFree(image, 0, MEM_RELEASE); CloseHandle(mapping); CloseHandle(exe);
-    puts("PASS: game import compatibility; sl2 default untouched; invalid extensions rejected; scoped read/write/attributes/enumeration/ANSI/rename/delete; missing-save isolation; custom extension mapping. Temporary save fixtures only; game never executed.");
+    puts("PASS: game import compatibility; sl2 default untouched; invalid extensions rejected; scoped read/write/attributes/enumeration/ANSI/rename/delete; missing-save isolation; custom extension mapping; Seamless co2-to-sl2/custom routing and missing-save isolation. Temporary save fixtures only; game never executed.");
     return 0;
 }
