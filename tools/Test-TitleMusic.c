@@ -196,7 +196,7 @@ int wmain(int argc, wchar_t **argv)
     CHECK(!rejectedOpens, "memory stream bypasses file callbacks");
     float gain;
     CHECK(!API(core, "FMOD_Channel_GetVolume", GetVolume)(musicChannel, &gain), "initial volume");
-    CHECK(fabsf(gain - 0.28f) < 0.0001f, "saved music seven is audible while LIVE OPTIONS ARE ALL ZERO");
+    CHECK(fabsf(gain - 0.07f) < 0.0001f, "saved music seven is audible while LIVE OPTIONS ARE ALL ZERO");
     CHECK(!optionsLoaded, "zero-filled live options remain pending");
     void *firstChannel = musicChannel;
     closeMovie(titleMovie); updateMusic();
@@ -245,7 +245,7 @@ int wmain(int argc, wchar_t **argv)
     CHECK(!API(core, "FMOD_ChannelGroup_SetVolume", SetVolume)(musicGroup, 0.0f), "startup bus muted");
     updateMusic();
     CHECK(!API(core, "FMOD_Channel_GetVolume", GetVolume)(musicChannel, &gain), "prompt volume");
-    CHECK(fabsf(gain - 0.28f) < 0.0001f, "music level seven is audible while BOTH FMOD values are zero");
+    CHECK(fabsf(gain - 0.07f) < 0.0001f, "music level seven is audible while BOTH FMOD values are zero");
     HANDLE worker = CreateThread(NULL, 0, workerUpdates, NULL, 0, NULL);
     CHECK(worker, "concurrent update worker");
     for (int tick = 0; tick < 40; ++tick) CHECK(!updateEvents(eventSystem), "game event update");
@@ -261,7 +261,7 @@ int wmain(int argc, wchar_t **argv)
         float audible = -1;
         CHECK(!API(core, "FMOD_Channel_GetAudibility", GetVolume)(musicChannel, &audible), "audibility readback");
         printf("Music level %.2f: audibility %.4f\n", levels[i], audible);
-        CHECK(fabsf(audible - 0.4f * levels[i]) < 0.01f, "live music scaling including mute");
+        CHECK(fabsf(audible - 0.1f * levels[i]) < 0.01f, "live music scaling including mute");
         CHECK(musicChannel == firstChannel, "setting capture does not restart the track");
     }
     options[0x0c] = options[0x0d] = options[0x0e] = 0;

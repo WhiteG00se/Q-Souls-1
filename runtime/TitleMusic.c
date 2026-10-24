@@ -250,7 +250,7 @@ static float titleGain(void)
             !(selectedAudio[0] || selectedAudio[1] || selectedAudio[2])) optionsLoaded = TRUE;
         if (optionsLoaded) memcpy(selectedAudio, levels, sizeof(selectedAudio));
     }
-    return 0.04f * selectedAudio[0];
+    return 0.01f * selectedAudio[0];
 }
 
 static BOOL startMusic(void)
