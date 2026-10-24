@@ -12,6 +12,10 @@ New-Item -ItemType Directory -Path $temporary -Force | Out-Null
 $cppCompiler = Join-Path (Split-Path -Parent $Compiler) 'clang++.exe'
 $common = @('--target=x86_64-w64-mingw32', '-O2', '-Wall', '-Wextra', '-Werror')
 $cpp = @('-std=c++17', '-static', '-fno-exceptions', '-fno-rtti')
+& $Compiler @common (Join-Path $PSScriptRoot 'Test-IntroSkip.c') -municode -o (Join-Path $temporary 'Test-IntroSkip.exe')
+if ($LASTEXITCODE -ne 0) { throw 'Intro-skip test build failed.' }
+& (Join-Path $temporary 'Test-IntroSkip.exe') (Join-Path $game 'DarkSoulsRemastered.exe')
+if ($LASTEXITCODE -ne 0) { throw 'Intro-skip tests failed.' }
 & $cppCompiler @common @cpp (Join-Path $PSScriptRoot 'Test-TitleOverlay.cpp') `
     -lgdi32 -ldxguid -ld3d11 -ldxgi -municode -o (Join-Path $temporary 'Test-TitleOverlay.exe')
 if ($LASTEXITCODE -ne 0) { throw 'Overlay test build failed.' }

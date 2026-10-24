@@ -5,6 +5,7 @@
 #include <string.h>
 #include <wchar.h>
 #include "TitleOverlay.h"
+#include "IntroSkip.h"
 
 static HMODULE self;
 static HANDLE changed, ready;
@@ -511,6 +512,12 @@ __declspec(dllexport) DWORD WINAPI InitializeQSouls(void *unused)
         !replaceImport(closeSlot, (void *)closeMovie) ||
         !replaceImport(categorySlot, (void *)getCategory) ||
         !replaceImport(releaseSlot, (void *)releaseEvents)) return ERROR_WRITE_FAULT;
+    DWORD introError = skipIntro();
+    if (introError) {
+        logMessage("Intro skip initialization failed.");
+        return introError;
+    }
+    logMessage("Startup logos skipped; title prompt awaits player input.");
     char message[128];
     snprintf(message, sizeof(message), "Title music ready (saved music=%u/10; live options pending).", selectedAudio[0]);
     logMessage(message);

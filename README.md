@@ -6,3 +6,4 @@
 4. Keep Steam running and run `_launch-Q-Souls-1.bat`.
 
 The title-menu version is read from `VERSION` at launch; update that file to change it.
+Startup intro is skipped
