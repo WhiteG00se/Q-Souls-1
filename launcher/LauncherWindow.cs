@@ -61,6 +61,99 @@ public static class LauncherFiles
     }
 }
 
+public static class LauncherTheme
+{
+    public static readonly Color Background = Color.FromArgb(17, 18, 20);
+    public static readonly Color Surface = Color.FromArgb(26, 27, 29);
+    public static readonly Color Input = Color.FromArgb(21, 22, 24);
+    public static readonly Color Ink = Color.FromArgb(222, 216, 203);
+    public static readonly Color Ember = Color.FromArgb(218, 155, 86);
+    public static readonly Color Border = Color.FromArgb(66, 57, 47);
+    [System.Runtime.InteropServices.DllImport("dwmapi.dll")]
+    static extern int DwmSetWindowAttribute(IntPtr window, int attribute, ref int value, int size);
+    [System.Runtime.InteropServices.DllImport("uxtheme.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+    static extern int SetWindowTheme(IntPtr window, string app, string list);
+    public static void Apply(Control control) {
+        control.BackColor = control is Form ? Background : Surface;
+        control.ForeColor = Ink;
+        var text = control as TextBoxBase;
+        if (text != null) { text.BackColor = Input; text.ForeColor = Ink; }
+        var button = control as ButtonBase;
+        if (button != null) {
+            button.FlatStyle = FlatStyle.Flat;
+            button.UseVisualStyleBackColor = false;
+            button.FlatAppearance.BorderColor = Border;
+            button.FlatAppearance.MouseOverBackColor = Color.FromArgb(57, 45, 34);
+            button.FlatAppearance.MouseDownBackColor = Color.FromArgb(78, 55, 34);
+            button.FlatAppearance.CheckedBackColor = Color.FromArgb(88, 59, 33);
+            button.Padding = new Padding(3, 0, 3, 0);
+            button.Paint += delegate(object sender, PaintEventArgs e) {
+                if (button.Enabled) return;
+                e.Graphics.Clear(button.BackColor);
+                using (var pen = new Pen(Border)) e.Graphics.DrawRectangle(pen, 0, 0, button.Width - 1, button.Height - 1);
+                TextRenderer.DrawText(e.Graphics, button.Text, button.Font, button.ClientRectangle,
+                    Color.FromArgb(145, 139, 128), TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+            };
+        }
+        control.HandleCreated += delegate {
+            SetWindowTheme(control.Handle, "DarkMode_Explorer", null);
+            if (control is Form) { int enabled = 1; DwmSetWindowAttribute(control.Handle, 20, ref enabled, 4); }
+        };
+        foreach (Control child in control.Controls) Apply(child);
+    }
+    public static void ShowMessage(string message, string title) {
+        using (var dialog = new Form { Text = title, StartPosition = FormStartPosition.CenterScreen,
+            ClientSize = new Size(480, 240), MinimizeBox = false, MaximizeBox = false,
+            AutoScaleMode = AutoScaleMode.Dpi, Font = new Font("Segoe UI", 10) }) {
+            var body = new TextBox { Text = message, Multiline = true, ReadOnly = true,
+                ScrollBars = ScrollBars.Vertical, Dock = DockStyle.Fill, BorderStyle = BorderStyle.None };
+            var close = new Button { Text = "Close", Dock = DockStyle.Bottom, Height = 42, DialogResult = DialogResult.OK };
+            dialog.Padding = new Padding(20); dialog.Controls.Add(body); dialog.Controls.Add(close);
+            dialog.AcceptButton = close; dialog.CancelButton = close;
+            Apply(dialog); dialog.ShowDialog();
+        }
+    }
+}
+// Keep the full text accessible while drawing the version suffix in the accent face.
+public sealed class VersionLabel : Label
+{
+    public bool FullAccent { get; set; }
+    public bool AccentVersion { get; set; }
+    static readonly TextFormatFlags Flags = TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine;
+    Match Suffix { get { return Regex.Match(Text, @"v\d+\.\d+(?:\.\d+){0,2}$"); } }
+    Font AccentFont() { return new Font("Georgia", 13, Font.Style); }
+    public override Size GetPreferredSize(Size proposedSize) {
+        if (FullAccent) using (Font accent = AccentFont()) {
+            Size size = TextRenderer.MeasureText(Text, accent, Size.Empty, Flags);
+            return new Size(size.Width + Padding.Horizontal, size.Height + Padding.Vertical);
+        }
+        Match suffix = Suffix;
+        if (!AccentVersion || !suffix.Success) return base.GetPreferredSize(proposedSize);
+        using (Font accent = AccentFont()) {
+            Size prefix = TextRenderer.MeasureText(Text.Substring(0, suffix.Index), Font, Size.Empty, Flags);
+            Size version = TextRenderer.MeasureText(suffix.Value, accent, Size.Empty, Flags);
+            return new Size(prefix.Width + version.Width + Padding.Horizontal, Math.Max(prefix.Height, version.Height) + Padding.Vertical);
+        }
+    }
+    protected override void OnPaint(PaintEventArgs e) {
+        if (FullAccent) {
+            using (Font accent = AccentFont()) TextRenderer.DrawText(e.Graphics, Text, accent,
+                new Rectangle(Padding.Left, Padding.Top, Math.Max(0, Width - Padding.Horizontal), Math.Max(0, Height - Padding.Vertical)),
+                LauncherTheme.Ember, Flags | TextFormatFlags.VerticalCenter);
+            return;
+        }
+        Match suffix = Suffix;
+        if (!AccentVersion || !suffix.Success) { base.OnPaint(e); return; }
+        string prefix = Text.Substring(0, suffix.Index);
+        using (Font accent = AccentFont()) {
+            int width = TextRenderer.MeasureText(e.Graphics, prefix, Font, Size.Empty, Flags).Width;
+            var bounds = new Rectangle(Padding.Left, Padding.Top, Math.Max(0, Width - Padding.Horizontal), Math.Max(0, Height - Padding.Vertical));
+            TextRenderer.DrawText(e.Graphics, prefix, Font, bounds, ForeColor, Flags | TextFormatFlags.VerticalCenter);
+            bounds.X += width; bounds.Width = Math.Max(0, bounds.Width - width);
+            TextRenderer.DrawText(e.Graphics, suffix.Value, accent, bounds, LauncherTheme.Ember, Flags | TextFormatFlags.VerticalCenter);
+        }
+    }
+}
 public sealed class LauncherWindow : Form
 {
     readonly string repository, settingsPath, iniPath;
@@ -71,7 +164,7 @@ public sealed class LauncherWindow : Form
     readonly Panel customExtensionRow = new Panel(), customExtensionGroup = new Panel();
     readonly Label customExtensionPrefix = new Label();
     readonly Label saveInfo = new Label(), status = new Label();
-    readonly Label installedSouls = new Label(), newestSouls = new Label(), installedCoop = new Label(), newestCoop = new Label(), zipHint = new Label();
+    readonly Label installedSouls = new VersionLabel(), newestSouls = new VersionLabel(), installedCoop = new VersionLabel(), newestCoop = new VersionLabel(), zipHint = new Label();
     readonly Button play = new Button(), check = new Button();
     readonly Button downloadCoop = new Button(), update = new Button();
     readonly RichTextBox details = new RichTextBox();
@@ -115,16 +208,26 @@ public sealed class LauncherWindow : Form
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100)); Controls.Add(layout);
         versionGroup = CreateSettingsGroup(); coopGroup = CreateSettingsGroup(); saveGroup = CreateSettingsGroup();
         layout.Controls.Add(versionGroup); layout.Controls.Add(coopGroup); layout.Controls.Add(saveGroup);
-        string version = File.Exists(Path.Combine(root, "VERSION.txt")) ? File.ReadAllText(Path.Combine(root, "VERSION.txt")).Trim() : "Unknown";
-        installedSouls.Text = "Installed Q Souls 1 Version: v" + version; installedSouls.AutoSize = true; versionGroup.Controls.Add(installedSouls);
-        newestSouls.Text = "Newest Q Souls 1 Version: Checking..."; newestSouls.AutoSize = true; versionGroup.Controls.Add(newestSouls);
-        var updateRow = new FlowLayoutPanel { AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, Dock = DockStyle.Fill };
+        versionGroup.Controls.Add(new VersionLabel { Text = "Q SOULS 1", FullAccent = true, AutoSize = true, Margin = new Padding(3, 2, 3, 10) });
+        string version = File.Exists(Path.Combine(root, "VERSION.txt")) ? File.ReadAllText(Path.Combine(root, "VERSION.txt")).Trim() : null;
+        installedSouls.Text = "Installed: " + (String.IsNullOrWhiteSpace(version) ? "Unavailable" : "v" + version); installedSouls.AutoSize = true;
+        newestSouls.Text = "Newest: Checking..."; newestSouls.AutoSize = true;
+        var versions = new FlowLayoutPanel { AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            FlowDirection = FlowDirection.TopDown, WrapContents = false, Margin = Padding.Empty, Dock = DockStyle.Fill };
+        versions.Controls.Add(installedSouls); versions.Controls.Add(newestSouls);
+        var updateRow = new TableLayoutPanel { AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, Margin = Padding.Empty };
+        updateRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        updateRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        updateRow.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        updateRow.Controls.Add(versions, 0, 0);
         update.Text = "Update to Q Souls 1"; update.AutoSize = true; update.Enabled = false;
         update.Click += delegate { BeginOperation("update"); };
-        updateRow.Controls.Add(update); versionGroup.Controls.Add(updateRow);
+        update.Anchor = AnchorStyles.Right;
+        updateRow.Controls.Add(update, 1, 0); versionGroup.Controls.Add(updateRow);
         seamless.Text = "Enable Seamless Co-op"; seamless.AutoSize = true; coopGroup.Controls.Add(seamless);
         installedCoop.AutoSize = true; coopGroup.Controls.Add(installedCoop);
-        newestCoop.Text = "Newest Seamless Co-op Version: Checking..."; newestCoop.AutoSize = true; coopGroup.Controls.Add(newestCoop);
+        newestCoop.Text = "Newest: Checking..."; newestCoop.AutoSize = true; coopGroup.Controls.Add(newestCoop);
         downloadCoop.Text = "Open Seamless Co-op Download Page"; downloadCoop.AutoSize = true;
         downloadCoop.Click += delegate {
             zipHint.Visible = true;
@@ -154,10 +257,10 @@ public sealed class LauncherWindow : Form
         foreach (var mode in new[] { sl2, co2, custom }) { mode.Appearance = Appearance.Button; mode.AutoSize = true; mode.TextAlign = ContentAlignment.MiddleCenter; saveModes.Controls.Add(mode); }
         sl2.Checked = true; saveGroup.Controls.Add(saveModes);
         customExtensionRow.Height = 34; customExtensionRow.Dock = DockStyle.Fill;
-        customExtensionGroup.Size = new Size(210, 30); customExtensionGroup.BorderStyle = BorderStyle.FixedSingle; customExtensionGroup.BackColor = SystemColors.Window;
+        customExtensionGroup.Size = new Size(210, 30); customExtensionGroup.BorderStyle = BorderStyle.FixedSingle; customExtensionGroup.BackColor = LauncherTheme.Input;
         customExtensionPrefix.Text = "."; customExtensionPrefix.Dock = DockStyle.Left; customExtensionPrefix.Width = 28;
-        customExtensionPrefix.TextAlign = ContentAlignment.MiddleCenter; customExtensionPrefix.BackColor = Color.FromArgb(235, 237, 240); customExtensionPrefix.ForeColor = SystemColors.GrayText;
-        var customEntry = new Panel { Dock = DockStyle.Fill, Padding = new Padding(7, 4, 7, 3), BackColor = SystemColors.Window };
+        customExtensionPrefix.TextAlign = ContentAlignment.MiddleCenter; customExtensionPrefix.BackColor = LauncherTheme.Surface; customExtensionPrefix.ForeColor = LauncherTheme.Ember;
+        var customEntry = new Panel { Dock = DockStyle.Fill, Padding = new Padding(7, 4, 7, 3), BackColor = LauncherTheme.Input };
         customExtension.BorderStyle = BorderStyle.None; customExtension.Dock = DockStyle.Fill;
         customEntry.Controls.Add(customExtension); customExtensionGroup.Controls.Add(customEntry); customExtensionGroup.Controls.Add(customExtensionPrefix);
         customExtensionPrefix.Click += delegate { customExtension.Focus(); };
@@ -202,11 +305,11 @@ public sealed class LauncherWindow : Form
         versionWorker.DoWork += delegate(object sender, DoWorkEventArgs e) { e.Result = RepositoryUpdates.CheckVersions(); };
         versionWorker.RunWorkerCompleted += delegate(object sender, RunWorkerCompletedEventArgs e) {
             if (IsDisposed) return;
-            if (e.Error != null) { newestSouls.Text = "Newest Q Souls 1 Version: Unavailable"; newestCoop.Text = "Newest Seamless Co-op Version: Unavailable"; UpdateVersionStyles(); return; }
+            if (e.Error != null) { newestSouls.Text = "Newest: Unavailable"; newestCoop.Text = "Newest: Unavailable"; UpdateVersionStyles(); return; }
             var result = (VersionCheck)e.Result;
             newest = result.Souls;
-            newestSouls.Text = "Newest Q Souls 1 Version: " + (newest == null ? "Unavailable" : "v" + newest.Version);
-            newestCoop.Text = "Newest Seamless Co-op Version: " + (result.CoopVersion == null ? "Unavailable" : "v" + result.CoopVersion);
+            newestSouls.Text = "Newest: " + (newest == null ? "Unavailable" : "v" + newest.Version);
+            newestCoop.Text = "Newest: " + (result.CoopVersion == null ? "Unavailable" : "v" + result.CoopVersion);
             UpdateVersionStyles();
             update.Text = newest == null ? "Update to Q Souls 1" : "Update to Q Souls 1 v" + newest.Version;
             UpdateButton();
@@ -233,6 +336,10 @@ public sealed class LauncherWindow : Form
         password.TextChanged += delegate { QueueSave(); };
         foreach (var mode in new[] { sl2, co2, custom }) mode.CheckedChanged += delegate(object sender, EventArgs e) { if (((RadioButton)sender).Checked) { UpdateSaveInfo(); QueueSave(); } };
         customExtension.TextChanged += delegate { UpdateSaveInfo(); QueueSave(); };
+        LauncherTheme.Apply(this);
+        layout.BackColor = LauncherTheme.Background;
+        play.BackColor = Color.FromArgb(105, 63, 31); play.ForeColor = Color.FromArgb(255, 229, 188);
+        status.ForeColor = LauncherTheme.Ember;
         QueueSave();
         UpdateSaveInfo(); versionGroup.ResumeLayout(true); coopGroup.ResumeLayout(true); saveGroup.ResumeLayout(true); layout.ResumeLayout(true); ResumeLayout(true);
         Shown += delegate { FitToContent(); if (onlineChecks) RefreshVersions(); };
@@ -241,11 +348,11 @@ public sealed class LauncherWindow : Form
         var group = new TableLayoutPanel {
             ColumnCount = 1, AutoSize = false,
             Dock = DockStyle.Fill, Padding = new Padding(10), Margin = new Padding(3, 3, 3, 8),
-            BackColor = Color.FromArgb(250, 250, 250)
+            BackColor = LauncherTheme.Surface
         };
         group.SuspendLayout(); group.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         group.Paint += delegate(object sender, PaintEventArgs e) {
-            using (var border = new Pen(Color.FromArgb(213, 216, 220))) e.Graphics.DrawRectangle(border, 0, 0, group.Width - 1, group.Height - 1);
+            using (var border = new Pen(LauncherTheme.Border)) e.Graphics.DrawRectangle(border, 0, 0, group.Width - 1, group.Height - 1);
         };
         group.Layout += delegate { RequestFit(); };
         return group;
@@ -281,6 +388,7 @@ public sealed class LauncherWindow : Form
             }
             return height + rowHeight;
         }
+        if (control is VersionLabel) return control.GetPreferredSize(new Size(width, 0)).Height;
         var label = control as Label;
         if (label != null) {
             if (label.MaximumSize.Width > 0) width = Math.Min(width, label.MaximumSize.Width);
@@ -391,8 +499,8 @@ public sealed class LauncherWindow : Form
     void RefreshInstallation() {
         bool installed = Installed();
         seamless.Enabled = installed && !worker.IsBusy;
-        try { installedCoop.Text = "Installed Seamless Co-op Version: " + (installed ? RepositoryUpdates.CoopInstalled(repository) : "not installed"); }
-        catch { installedCoop.Text = "Installed Seamless Co-op Version: Unknown (installed)"; }
+        try { installedCoop.Text = "Installed: " + (installed ? RepositoryUpdates.CoopInstalled(repository) : "not installed"); }
+        catch { installedCoop.Text = "Installed: Unknown (installed)"; }
         UpdateVersionStyles();
     }
     void UpdateVersionStyles() {
@@ -401,13 +509,15 @@ public sealed class LauncherWindow : Form
     }
     void StyleVersionPair(Label local, Label remote) {
         bool different = false;
-        Match first = Regex.Match(local.Text, @": v(\d+\.\d+(?:\.\d+){0,2})$");
-        Match second = Regex.Match(remote.Text, @": v(\d+\.\d+(?:\.\d+){0,2})$");
+        Match first = Regex.Match(local.Text, @"\sv(\d+\.\d+(?:\.\d+){0,2})$");
+        Match second = Regex.Match(remote.Text, @"\sv(\d+\.\d+(?:\.\d+){0,2})$");
         if (first.Success && second.Success) {
             try { different = RepositoryUpdates.ParseVersion(first.Groups[1].Value) != RepositoryUpdates.ParseVersion(second.Groups[1].Value); }
             catch { }
         }
+        ((VersionLabel)local).AccentVersion = ((VersionLabel)remote).AccentVersion = different;
         local.Font = remote.Font = different ? boldVersionFont : Font;
+        local.Invalidate(); remote.Invalidate();
     }
     bool Installed() {
         foreach (string relative in new[] { "ds1sc.dll", "ds1sc_settings.ini", "locale\\english.json" })
@@ -473,16 +583,16 @@ public sealed class LauncherWindow : Form
         details.Text = String.Join(Environment.NewLine, lines);
     }
     void ColorOutput() {
-        details.SelectAll(); details.SelectionColor = SystemColors.WindowText;
+        details.SelectAll(); details.SelectionColor = LauncherTheme.Ink;
         int offset = 0;
         foreach (string line in details.Lines) {
             string content = line.TrimStart('\u2022', ' ');
             int symbol = offset + line.Length - content.Length;
             if (content.StartsWith("\u2705")) {
-                details.Select(symbol, 1); details.SelectionColor = Color.ForestGreen;
+                details.Select(symbol, 1); details.SelectionColor = Color.FromArgb(142, 192, 145);
             }
             else if (content.StartsWith("\u26A0")) {
-                details.Select(symbol, content.StartsWith("\u26A0\uFE0F") ? 2 : 1); details.SelectionColor = Color.DarkGoldenrod;
+                details.Select(symbol, content.StartsWith("\u26A0\uFE0F") ? 2 : 1); details.SelectionColor = LauncherTheme.Ember;
             }
             offset += line.Length + 1;
         }
@@ -642,7 +752,7 @@ public sealed class UpdateWindow : Form
         using (var stream = typeof(LauncherWindow).Assembly.GetManifestResourceStream("QS1.ico"))
         using (var icon = new Icon(stream)) Icon = (Icon)icon.Clone();
         var label = new Label { Dock = DockStyle.Fill, Padding = new Padding(16), Text = "Installing the verified update...", AutoSize = false };
-        Controls.Add(label);
+        Controls.Add(label); LauncherTheme.Apply(this);
         var worker = new BackgroundWorker();
         FormClosing += delegate(object sender, FormClosingEventArgs e) { if (worker.IsBusy) e.Cancel = true; };
         worker.DoWork += delegate(object sender, DoWorkEventArgs e) {
@@ -661,12 +771,12 @@ public sealed class UpdateWindow : Form
             e.Result = applied;
         };
         worker.RunWorkerCompleted += delegate(object sender, RunWorkerCompletedEventArgs e) {
-            if (e.Error != null) MessageBox.Show(e.Error.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Error);
+            if (e.Error != null) LauncherTheme.ShowMessage(e.Error.Message, Text);
             else {
                 try {
                     var plan = RepositoryUpdates.Json().Deserialize<UpdatePlan>(File.ReadAllText(Path.Combine(job, "plan.json")));
                     Process.Start(new ProcessStartInfo(Path.Combine(plan.Repository, "_launch-Q-Souls-1.exe")) { UseShellExecute = true, WorkingDirectory = plan.Repository });
-                } catch (Exception ex) { MessageBox.Show("Update installed. Reopen the launcher manually. " + ex.Message, Text); }
+                } catch (Exception ex) { LauncherTheme.ShowMessage("Update installed. Reopen the launcher manually. " + ex.Message, Text); }
             }
             Close();
         };
@@ -682,6 +792,6 @@ static class LauncherEntry
         try {
             if (args.Length == 3 && args[0] == "--apply-update") Application.Run(new UpdateWindow(args[1], Int32.Parse(args[2])));
             else Application.Run(new LauncherWindow(AppDomain.CurrentDomain.BaseDirectory));
-        } catch (Exception ex) { MessageBox.Show(ex.Message, "Q Souls 1 Launcher", MessageBoxButtons.OK, MessageBoxIcon.Error); }
+        } catch (Exception ex) { LauncherTheme.ShowMessage(ex.Message, "Q Souls 1 Launcher"); }
     }
 }

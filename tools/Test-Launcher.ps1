@@ -56,6 +56,21 @@ try {
     Assert ($setupButton.Text -eq 'Verify setup') 'Merged setup button has the wrong label.'
     Assert (($setupButton.Parent.Controls | ForEach-Object { $_.Text }) -join '|' -eq 'Play|Open savefile folder|Verify setup') 'Setup button is not in the requested position.'
     $flags = [Reflection.BindingFlags]'Instance,NonPublic'
+    $localVersion = $form.GetType().GetField('installedSouls', $flags).GetValue($form)
+    $remoteVersion = $form.GetType().GetField('newestSouls', $flags).GetValue($form)
+    $originalLocal = $localVersion.Text; $originalRemote = $remoteVersion.Text
+    $styleVersions = $form.GetType().GetMethod('UpdateVersionStyles', $flags)
+    $localVersion.Text = 'Installed: v0.9'
+    $remoteVersion.Text = 'Newest: v0.10'
+    [void]$styleVersions.Invoke($form, @())
+    Assert ($localVersion.Font.Bold -and $remoteVersion.Font.Bold) 'Different versions must both be bold.'
+    Assert ($localVersion.AccentVersion -and $remoteVersion.AccentVersion) 'Different versions must accent both version suffixes.'
+    $remoteVersion.Text = 'Newest: v0.9'
+    [void]$styleVersions.Invoke($form, @())
+    Assert (-not $localVersion.Font.Bold -and -not $remoteVersion.Font.Bold) 'Matching versions must return to regular weight.'
+    Assert (-not $localVersion.AccentVersion -and -not $remoteVersion.AccentVersion) 'Matching versions must remove conditional accents.'
+    $localVersion.Text = $originalLocal; $remoteVersion.Text = $originalRemote
+    [void]$styleVersions.Invoke($form, @())
     Wait-Settings $form
     $updateButton = $form.GetType().GetField('update', $flags).GetValue($form)
     Assert (-not $updateButton.Enabled) 'Update enabled before a version check.'
