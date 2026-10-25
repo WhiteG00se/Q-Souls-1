@@ -34,7 +34,7 @@ try {
     [xml]$saved = Get-Content (Join-Path $temporary '.local\launcher.xml') -Raw
     Assert ($saved.LauncherSettings.ControllerHelper -eq 'true') 'Latest helper edit was not saved.'
     $sl2 = Field $form 'sl2'; $co2 = Field $form 'co2'; $custom = Field $form 'custom'
-    $input = Field $form 'customExtension'; $row = Field $form 'customExtensionRow'; $group = Field $form 'customExtensionGroup'; $info = Field $form 'saveInfo'; $coop = Field $form 'seamless'
+    $input = Field $form 'customExtension'; $group = Field $form 'customExtensionGroup'; $info = Field $form 'saveInfo'; $coop = Field $form 'seamless'
     Assert ($sl2.Checked -and (Extension) -eq 'sl2') 'Default did not stay sl2 despite the co-op package default.'
     Assert (-not $group.Visible) 'Custom input is visible for sl2.'
     Assert ($info.Text -ceq "Vanilla, works with Steam cloud sync.`r`nOnly load modded saves in the modded game and vice versa.") 'sl2 remark differs.'
@@ -51,9 +51,21 @@ try {
     Assert ($group.Visible -and -not (Field $form 'play').Enabled) 'Empty custom selection did not show input/block Play.'
     $prefix = Field $form 'customExtensionPrefix'
     Assert ($prefix -is [Windows.Forms.Label] -and $prefix.Text -eq '.' -and $prefix.Parent -eq $group -and $input.BorderStyle -eq [Windows.Forms.BorderStyle]::None) 'Custom dot is not an integrated read-only prefix.'
+    Assert ($info.Text -ceq 'You better know what you are doing!') 'Custom warning missing for empty input.'
+    Assert ($group.Parent -eq $custom.Parent -and $group.Left -gt $custom.Right) 'Custom input is not beside Custom.'
+    $normalGap = $co2.Left - $sl2.Right
+    Assert ([Math]::Abs(($group.Left - $custom.Right) - 2.5 * $normalGap) -le 1) 'Custom input gap is not 2.5 times the toggle gap.'
+    Assert ([Math]::Abs(($group.Top + $group.Height / 2) - ($custom.Top + $custom.Height / 2)) -le 2) 'Custom input is not vertically centered.'
+    Assert ($prefix.BackColor -eq $input.BackColor -and $prefix.ForeColor -eq $input.ForeColor -and $prefix.Width -lt 28 * $form.DeviceDpi / 96) 'Dot does not blend into the input.'
+    $tenChars = [Windows.Forms.TextRenderer]::MeasureText('0000000000', $input.Font, [Drawing.Size]::Empty, [Windows.Forms.TextFormatFlags]::NoPadding).Width
+    Assert ([Math]::Abs($input.ClientSize.Width - $tenChars) -le 2) 'Input is not sized for ten characters.'
+    Assert ($custom.BackColor -eq (Field $form 'play').BackColor -and $custom.ForeColor -eq (Field $form 'play').ForeColor) 'Selected toggle does not match Play.'
     $input.Text = 'mySave9'; Wait-Save $form
     Assert ((Extension) -eq 'mySave9' -and (Field $form 'play').Enabled) 'Custom extension not persisted.'
-    Assert ($info.Text.EndsWith("I hope you know what you're doing!")) 'Custom remark differs.'
+    Assert ($info.Text.EndsWith("You better know what you are doing!")) 'Custom remark differs.'
+    $input.Text = 'sl2'; Wait-Save $form
+    Assert ($info.Text -ceq 'You better know what you are doing!') 'Custom warning changed for a known extension.'
+    $input.Text = 'mySave9'; Wait-Save $form
     $input.Text = '../bad'; Wait-Save $form $true
     Assert ((Extension) -eq 'mySave9') 'Invalid custom value changed the active save setting.'
     $input.Text = 'mySave9'; Wait-Save $form

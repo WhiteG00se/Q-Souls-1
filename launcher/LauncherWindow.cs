@@ -68,6 +68,8 @@ public static class LauncherTheme
     public static readonly Color Input = Color.FromArgb(21, 22, 24);
     public static readonly Color Ink = Color.FromArgb(222, 216, 203);
     public static readonly Color Ember = Color.FromArgb(218, 155, 86);
+    public static readonly Color Accent = Color.FromArgb(105, 63, 31);
+    public static readonly Color AccentInk = Color.FromArgb(255, 229, 188);
     public static readonly Color Border = Color.FromArgb(66, 57, 47);
     [System.Runtime.InteropServices.DllImport("dwmapi.dll")]
     static extern int DwmSetWindowAttribute(IntPtr window, int attribute, ref int value, int size);
@@ -85,7 +87,18 @@ public static class LauncherTheme
             button.FlatAppearance.BorderColor = Border;
             button.FlatAppearance.MouseOverBackColor = Color.FromArgb(57, 45, 34);
             button.FlatAppearance.MouseDownBackColor = Color.FromArgb(78, 55, 34);
-            button.FlatAppearance.CheckedBackColor = Color.FromArgb(88, 59, 33);
+            button.FlatAppearance.CheckedBackColor = Accent;
+            var toggle = button as RadioButton;
+            if (toggle != null) {
+                Action refresh = delegate {
+                    toggle.BackColor = toggle.Checked ? Accent : Surface;
+                    toggle.ForeColor = toggle.Checked ? AccentInk : Ink;
+                    toggle.FlatAppearance.MouseOverBackColor = toggle.Checked ? Accent : Color.FromArgb(57, 45, 34);
+                    toggle.FlatAppearance.MouseDownBackColor = toggle.Checked ? Accent : Color.FromArgb(78, 55, 34);
+                };
+                toggle.CheckedChanged += delegate { refresh(); };
+                refresh();
+            }
             button.Padding = new Padding(3, 0, 3, 0);
             button.Paint += delegate(object sender, PaintEventArgs e) {
                 if (button.Enabled) return;
@@ -112,6 +125,39 @@ public static class LauncherTheme
             dialog.AcceptButton = close; dialog.CancelButton = close;
             Apply(dialog); dialog.ShowDialog();
         }
+    }
+}
+// Draw the indicator explicitly so Windows themes cannot replace the accent color.
+public sealed class AccentCheckBox : CheckBox
+{
+    protected override void OnPaint(PaintEventArgs e) {
+        base.OnPaint(e);
+        e.Graphics.Clear(BackColor);
+        float scale = DeviceDpi / 96F;
+        int side = (int)Math.Round(13 * scale);
+        var box = new Rectangle(Padding.Left, (Height - side) / 2, side, side);
+        using (var fill = new SolidBrush(Checked ? LauncherTheme.Accent : LauncherTheme.Input)) e.Graphics.FillRectangle(fill, box);
+        using (var border = new Pen(LauncherTheme.Border)) e.Graphics.DrawRectangle(border, box);
+        if (Checked) using (var pen = new Pen(Enabled ? LauncherTheme.AccentInk : SystemColors.GrayText, Math.Max(1, 2 * scale))) {
+            e.Graphics.DrawLines(pen, new[] {
+                new PointF(box.Left + 3 * scale, box.Top + 6 * scale),
+                new PointF(box.Left + 5 * scale, box.Top + 9 * scale),
+                new PointF(box.Left + 10 * scale, box.Top + 3 * scale)
+            });
+        }
+        var text = new Rectangle(box.Right + (int)Math.Round(3 * scale), Padding.Top,
+            Math.Max(0, Width - box.Right - (int)Math.Round(3 * scale) - Padding.Right), Height - Padding.Vertical);
+        TextRenderer.DrawText(e.Graphics, Text, Font, text, Enabled ? ForeColor : SystemColors.GrayText,
+            TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.NoPadding);
+        if (Focused && ShowFocusCues) ControlPaint.DrawFocusRectangle(e.Graphics, text, ForeColor, BackColor);
+    }
+}
+// Match the textbox glyph spacing without Label's default horizontal padding.
+public sealed class SaveExtensionPrefix : Label
+{
+    protected override void OnPaint(PaintEventArgs e) {
+        TextRenderer.DrawText(e.Graphics, Text, Font, ClientRectangle, ForeColor,
+            TextFormatFlags.NoPadding | TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine);
     }
 }
 // Keep the full text accessible while drawing the version suffix in the accent face.
@@ -157,12 +203,12 @@ public sealed class VersionLabel : Label
 public sealed class LauncherWindow : Form
 {
     readonly string repository, settingsPath, iniPath;
-    readonly CheckBox seamless = new CheckBox(), controllerHelper = new CheckBox();
+    readonly CheckBox seamless = new AccentCheckBox(), controllerHelper = new AccentCheckBox();
     readonly TextBox password = new TextBox();
     readonly RadioButton sl2 = new RadioButton(), co2 = new RadioButton(), custom = new RadioButton();
     readonly TextBox customExtension = new TextBox();
-    readonly Panel customExtensionRow = new Panel(), customExtensionGroup = new Panel();
-    readonly Label customExtensionPrefix = new Label();
+    readonly Panel customExtensionGroup = new Panel();
+    readonly Label customExtensionPrefix = new SaveExtensionPrefix();
     readonly Label saveInfo = new Label(), status = new Label();
     readonly Label installedSouls = new VersionLabel(), newestSouls = new VersionLabel(), installedCoop = new VersionLabel(), newestCoop = new VersionLabel(), zipHint = new Label();
     readonly Button play = new Button(), check = new Button();
@@ -180,7 +226,7 @@ public sealed class LauncherWindow : Form
     const string PasswordPrompt = "Enter a co-op password. Everyone in your party must use the same password.";
     const string Sl2Remark = "Vanilla, works with Steam cloud sync.\r\nOnly load modded saves in the modded game and vice versa.";
     const string Co2Remark = "Default for Seemless Co-op. Doesn't work with Steam cloud sync.";
-    const string CustomRemark = "I hope you know what you're doing!";
+    const string CustomRemark = "You better know what you are doing!";
     const string InstallSuccess = "Seamless Co-op installed successfully";
     readonly Font boldVersionFont;
     PublishedVersion newest;
@@ -267,15 +313,14 @@ public sealed class LauncherWindow : Form
         sl2.Text = ".sl2"; co2.Text = ".co2"; custom.Text = "custom";
         foreach (var mode in new[] { sl2, co2, custom }) { mode.Appearance = Appearance.Button; mode.AutoSize = true; mode.TextAlign = ContentAlignment.MiddleCenter; saveModes.Controls.Add(mode); }
         sl2.Checked = true; saveGroup.Controls.Add(saveModes);
-        customExtensionRow.Height = 34; customExtensionRow.Dock = DockStyle.Fill;
-        customExtensionGroup.Size = new Size(210, 30); customExtensionGroup.BorderStyle = BorderStyle.FixedSingle; customExtensionGroup.BackColor = LauncherTheme.Input;
-        customExtensionPrefix.Text = "."; customExtensionPrefix.Dock = DockStyle.Left; customExtensionPrefix.Width = 28;
-        customExtensionPrefix.TextAlign = ContentAlignment.MiddleCenter; customExtensionPrefix.BackColor = LauncherTheme.Surface; customExtensionPrefix.ForeColor = LauncherTheme.Ember;
-        var customEntry = new Panel { Dock = DockStyle.Fill, Padding = new Padding(7, 4, 7, 3), BackColor = LauncherTheme.Input };
+        customExtensionGroup.BorderStyle = BorderStyle.FixedSingle; customExtensionGroup.BackColor = LauncherTheme.Input;
+        customExtensionPrefix.Text = "."; customExtensionPrefix.Dock = DockStyle.Left; customExtensionPrefix.Width = 8;
+        customExtensionPrefix.TextAlign = ContentAlignment.MiddleCenter; customExtensionPrefix.BackColor = LauncherTheme.Input; customExtensionPrefix.ForeColor = LauncherTheme.Ink;
+        var customEntry = new Panel { Dock = DockStyle.Fill, Padding = new Padding(0, 4, 4, 4), BackColor = LauncherTheme.Input };
         customExtension.BorderStyle = BorderStyle.None; customExtension.Dock = DockStyle.Fill;
         customEntry.Controls.Add(customExtension); customExtensionGroup.Controls.Add(customEntry); customExtensionGroup.Controls.Add(customExtensionPrefix);
         customExtensionPrefix.Click += delegate { customExtension.Focus(); };
-        customExtensionRow.Controls.Add(customExtensionGroup); saveGroup.Controls.Add(customExtensionRow);
+        saveModes.Controls.Add(customExtensionGroup);
         saveInfo.AutoSize = false; saveInfo.Dock = DockStyle.Fill; saveInfo.MaximumSize = new Size(550, 0); saveGroup.Controls.Add(saveInfo);
         var openSaves = new Button { Text = "Open savefile folder", AutoSize = true };
         openSaves.Click += delegate {
@@ -351,7 +396,8 @@ public sealed class LauncherWindow : Form
         customExtension.TextChanged += delegate { UpdateSaveInfo(); QueueSave(); };
         LauncherTheme.Apply(this);
         layout.BackColor = LauncherTheme.Background;
-        play.BackColor = Color.FromArgb(105, 63, 31); play.ForeColor = Color.FromArgb(255, 229, 188);
+        play.BackColor = LauncherTheme.Accent; play.ForeColor = LauncherTheme.AccentInk;
+        customExtensionGroup.BackColor = customExtensionPrefix.BackColor = customEntry.BackColor = LauncherTheme.Input;
         status.ForeColor = LauncherTheme.Ember;
         QueueSave();
         UpdateSaveInfo(); versionGroup.ResumeLayout(true); coopGroup.ResumeLayout(true); saveGroup.ResumeLayout(true); layout.ResumeLayout(true); ResumeLayout(true);
@@ -379,7 +425,6 @@ public sealed class LauncherWindow : Form
     }
     int ContentRowHeight(Control control, int width, float scale) {
         if (control == zipHint && !zipHint.Visible) return 0;
-        if (control == customExtensionRow) return custom.Checked ? (int)Math.Ceiling(34 * scale) : 0;
         var flow = control as FlowLayoutPanel;
         if (flow != null) {
             // Measure the controls, never the old height of their container.
@@ -387,6 +432,7 @@ public sealed class LauncherWindow : Form
             int used = flow.Padding.Left, rowHeight = 0, height = flow.Padding.Vertical;
             int available = Math.Max(1, width - flow.Padding.Horizontal);
             foreach (Control child in flow.Controls) {
+                if (!child.Visible) continue;
                 Size size;
                 var input = child as TextBox;
                 if (input != null) size = new Size(input.Width, input.PreferredHeight);
@@ -468,6 +514,18 @@ public sealed class LauncherWindow : Form
         try {
             ApplyScreenBounds(Bounds);
             float scale = DeviceDpi / 96F;
+            int toggleGap = sl2.Margin.Right + co2.Margin.Left;
+            int inputGap = (int)Math.Round(toggleGap * 2.5);
+            int inset = (int)Math.Round(4 * scale);
+            customExtensionPrefix.Width = (int)Math.Round(8 * scale);
+            customExtensionGroup.Size = new Size(
+                TextRenderer.MeasureText("0000000000", customExtension.Font, Size.Empty, TextFormatFlags.NoPadding).Width
+                    + customExtensionPrefix.Width + inset + 2,
+                custom.GetPreferredSize(Size.Empty).Height);
+            int verticalInset = Math.Max(0, (customExtensionGroup.ClientSize.Height - customExtension.PreferredHeight) / 2);
+            customExtension.Parent.Padding = new Padding(0, verticalInset, inset, verticalInset);
+            int top = custom.Margin.Top;
+            customExtensionGroup.Margin = new Padding(Math.Max(0, inputGap - custom.Margin.Right), top, sl2.Margin.Right, sl2.Margin.Bottom);
             for (int pass = 0; pass < 2; pass++) {
                 int oldWidth = layout.ClientSize.Width;
                 SizeSettingsGroup(versionGroup, scale); SizeSettingsGroup(coopGroup, scale); SizeSettingsGroup(saveGroup, scale);
@@ -546,10 +604,9 @@ public sealed class LauncherWindow : Form
     string SaveExtension() { return custom.Checked ? customExtension.Text : co2.Checked ? "co2" : "sl2"; }
     void UpdateSaveInfo() {
         password.Enabled = seamless.Checked && !worker.IsBusy;
-        customExtensionRow.Visible = custom.Checked;
         customExtensionGroup.Visible = custom.Checked;
         string extension = SaveExtension();
-        string remark = extension.Equals("sl2", StringComparison.OrdinalIgnoreCase) ? Sl2Remark : extension.Equals("co2", StringComparison.OrdinalIgnoreCase) ? Co2Remark : CustomRemark;
+        string remark = custom.Checked ? CustomRemark : extension.Equals("sl2", StringComparison.OrdinalIgnoreCase) ? Sl2Remark : extension.Equals("co2", StringComparison.OrdinalIgnoreCase) ? Co2Remark : CustomRemark;
         saveInfo.Text = remark;
         RequestFit();
     }
