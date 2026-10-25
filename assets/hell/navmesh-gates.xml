@@ -1,0 +1,113 @@
+<?xml version='1.0' encoding='utf-8'?>
+<hell version="1" size="6876" sha256="086749ea835e4c7f81418acb6c095911cf441c725eb3cea133ce222a46d82432" compression="-1">
+  <source path="map/m14_01_00_00/m14_01_00_00.mcg" offset="0" length="0" inflate="false" sha256="7814428bae877cae5d275dd175a19e71eccf9e5e15d5438db0e2709031e5b05d" />
+  <bytes>AQAAAAAAAAA1AAAAPBQAAEMAAADQ</bytes>
+  <copy source="0" offset="21" length="1659" />
+  <bytes>PQAAAD4AAAAiAAAAIQ==</bytes>
+  <copy source="0" offset="1677" length="1043" />
+  <bytes>NAAAADQAAABBAAAAQgAAADMAAAAzAAAAQQAAAEI=</bytes>
+  <copy source="0" offset="2717" length="2343" />
+  <bytes>MwAAAAEAAACQBgAANAAAAAEAAACUBgAAMQAAAAAAAQ4AAPBBMwAAAAEAAACYBgAANAAAAAEAAACcBgAAMgAAAAAAAQ4AAPA=</bytes>
+  <copy source="0" offset="5059" length="17" />
+  <bytes>oAYAAKg=</bytes>
+  <copy source="0" offset="5081" length="27" />
+  <bytes>sAYAALw=</bytes>
+  <copy source="0" offset="5113" length="27" />
+  <bytes>yAYAANQ=</bytes>
+  <copy source="0" offset="5145" length="27" />
+  <bytes>4AYAAOg=</bytes>
+  <copy source="0" offset="5177" length="27" />
+  <bytes>8AYAAPg=</bytes>
+  <copy source="0" offset="5209" length="27" />
+  <bytes>AAcAAAgH</bytes>
+  <copy source="0" offset="5242" length="26" />
+  <bytes>EAcAABQ=</bytes>
+  <copy source="0" offset="5273" length="27" />
+  <bytes>GAcAACA=</bytes>
+  <copy source="0" offset="5305" length="27" />
+  <bytes>KAcAADA=</bytes>
+  <copy source="0" offset="5337" length="27" />
+  <bytes>OAcAAEA=</bytes>
+  <copy source="0" offset="5369" length="27" />
+  <bytes>SAcAAFA=</bytes>
+  <copy source="0" offset="5401" length="27" />
+  <bytes>WAcAAGA=</bytes>
+  <copy source="0" offset="5433" length="27" />
+  <bytes>aAcAAHA=</bytes>
+  <copy source="0" offset="5465" length="27" />
+  <bytes>eAcAAIQ=</bytes>
+  <copy source="0" offset="5497" length="27" />
+  <bytes>kAcAAKA=</bytes>
+  <copy source="0" offset="5529" length="27" />
+  <bytes>sAcAALg=</bytes>
+  <copy source="0" offset="5561" length="27" />
+  <bytes>wAcAANA=</bytes>
+  <copy source="0" offset="5593" length="27" />
+  <bytes>4AcAAOw=</bytes>
+  <copy source="0" offset="5625" length="27" />
+  <bytes>+AcAAAgI</bytes>
+  <copy source="0" offset="5658" length="26" />
+  <bytes>GAgAACg=</bytes>
+  <copy source="0" offset="5689" length="27" />
+  <bytes>OAgAAEg=</bytes>
+  <copy source="0" offset="5721" length="27" />
+  <bytes>WAgAAGQ=</bytes>
+  <copy source="0" offset="5753" length="27" />
+  <bytes>cAgAAHg=</bytes>
+  <copy source="0" offset="5785" length="27" />
+  <bytes>gAgAAIg=</bytes>
+  <copy source="0" offset="5817" length="27" />
+  <bytes>kAgAAJw=</bytes>
+  <copy source="0" offset="5849" length="27" />
+  <bytes>qAgAALQ=</bytes>
+  <copy source="0" offset="5881" length="27" />
+  <bytes>wAgAAMw=</bytes>
+  <copy source="0" offset="5913" length="27" />
+  <bytes>2AgAAOg=</bytes>
+  <copy source="0" offset="5945" length="27" />
+  <bytes>+AgAAAAJ</bytes>
+  <copy source="0" offset="5978" length="26" />
+  <bytes>CAkAABA=</bytes>
+  <copy source="0" offset="6009" length="27" />
+  <bytes>GAkAACA=</bytes>
+  <copy source="0" offset="6041" length="27" />
+  <bytes>KAkAADA=</bytes>
+  <copy source="0" offset="6073" length="27" />
+  <bytes>OAkAAEA=</bytes>
+  <copy source="0" offset="6105" length="27" />
+  <bytes>SAkAAFA=</bytes>
+  <copy source="0" offset="6137" length="27" />
+  <bytes>WAkAAGA=</bytes>
+  <copy source="0" offset="6169" length="27" />
+  <bytes>aAkAAHg=</bytes>
+  <copy source="0" offset="6201" length="27" />
+  <bytes>iAkAAJw=</bytes>
+  <copy source="0" offset="6233" length="27" />
+  <bytes>sAkAAMA=</bytes>
+  <copy source="0" offset="6265" length="27" />
+  <bytes>0AkAANw=</bytes>
+  <copy source="0" offset="6297" length="27" />
+  <bytes>6AkAAPQ=</bytes>
+  <copy source="0" offset="6329" length="27" />
+  <bytes>AAoAAAgK</bytes>
+  <copy source="0" offset="6362" length="26" />
+  <bytes>EAoAABg=</bytes>
+  <copy source="0" offset="6393" length="27" />
+  <bytes>IAoAACg=</bytes>
+  <copy source="0" offset="6425" length="27" />
+  <bytes>MAoAADg=</bytes>
+  <copy source="0" offset="6457" length="27" />
+  <bytes>QAoAAEg=</bytes>
+  <copy source="0" offset="6489" length="27" />
+  <bytes>UAoAAFQ=</bytes>
+  <copy source="0" offset="6521" length="27" />
+  <bytes>WAoAAGA=</bytes>
+  <copy source="0" offset="6553" length="27" />
+  <bytes>aAoAAHA=</bytes>
+  <copy source="0" offset="6585" length="27" />
+  <bytes>eAoAAIA=</bytes>
+  <copy source="0" offset="6617" length="27" />
+  <bytes>iAoAAJQ=</bytes>
+  <copy source="0" offset="6649" length="27" />
+  <bytes>oAoAAKgKAAD/////YB1tBAIAAAAAwLxEAAC+wwAAyEKwCgAAuAoAAP////8AAAAAAgAAAABAukQAAL7DAADIQsAKAADICgAA/////wAAAAA=</bytes>
+</hell>

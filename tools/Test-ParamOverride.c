@@ -77,9 +77,31 @@ int wmain(int argc, wchar_t **argv)
     typedef HANDLE (WINAPI *OpenA)(LPCSTR, DWORD, DWORD, LPSECURITY_ATTRIBUTES, DWORD, DWORD, HANDLE);
     typedef DWORD (WINAPI *AttrsW)(LPCWSTR);
     OpenW callW = (OpenW)*wide; OpenA callA = (OpenA)*ansi; AttrsW callInfo = (AttrsW)*info;
-    CHECK(loadRespecOverrides(argv[2]) == ERROR_SUCCESS && respecOverrideCount == 4, "load allowlisted external Respec assets");
+    CHECK(loadRespecOverrides(argv[2]) == ERROR_SUCCESS && respecOverrideCount == 22, "load allowlisted external Respec assets");
     wchar_t mapped[MAX_PATH];
     CHECK(!respecAssetName(L"script\\talk\\..\\archive.talkesdbnd.dcx") && !respecAssetName(L"D:\\game\\archive.talkesdbnd.dcx"), "manifest path traversal and absolute paths rejected");
+    const wchar_t *arenaNames[] = {
+        L"msg\\ENGLISH\\item.msgbnd.dcx",
+        L"map\\MapStudio\\m10_02_00_00.msb", L"map\\MapStudio\\m14_01_00_00.msb",
+        L"map\\m14_01_00_00\\m9900B1A14.flver.dcx",
+        L"map\\m14_01_00_00\\m9901B1A14.flver.dcx", L"map\\m14\\m14_9999.tpf.dcx",
+        L"map\\m14\\GI_EnvM_m14.tpfbhd", L"map\\m14\\GI_EnvM_m14.tpfbdt",
+        L"param\\DrawParam\\a14_DrawParam.parambnd.dcx",
+        L"map\\m14_01_00_00\\m14_01_00_00.nvmbnd.dcx",
+        L"map\\m14_01_00_00\\m14_01_00_00.mcp", L"map\\m14_01_00_00\\m14_01_00_00.mcg",
+        L"map\\m14_01_00_00\\h14_01_00_00.hkxbhd", L"map\\m14_01_00_00\\h14_01_00_00.hkxbdt",
+        L"map\\m14_01_00_00\\l14_01_00_00.hkxbhd", L"map\\m14_01_00_00\\l14_01_00_00.hkxbdt",
+        L"event\\m10_02_00_00.emevd.dcx", L"event\\m14_01_00_00.emevd.dcx"
+    };
+    for (size_t i = 0; i < sizeof(arenaNames) / sizeof(*arenaNames); ++i) {
+        CHECK(respecAssetName(arenaNames[i]), "exact arena asset allowlist");
+        CHECK(mapRespecAssetW(arenaNames[i], mapped), "arena assets redirect through the manifest");
+        CHECK(marker(callW(arenaNames[i], GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL)), "arena asset reads use external files");
+        CHECK(callInfo(arenaNames[i]) != INVALID_FILE_ATTRIBUTES, "new arena assets report external attributes");
+    }
+    CHECK(!respecAssetName(L"map\\MapStudio\\m14_00_00_00.msb") &&
+          !respecAssetName(L"map\\m14_01_00_00\\m9902B1A14.flver.dcx") &&
+          !respecAssetName(L"event\\common.emevd.dcx"), "unrelated map/event assets rejected");
     CHECK(!mapRespecAssetW(NULL, mapped) && !mapRespecAssetA(NULL, mapped), "null asset paths pass through");
     CHECK(mapRespecAssetW(L"script/talk/m10_00_00_00.talkesdbnd.dcx", mapped), "relative talk archive mapping");
     CHECK(!mapRespecAssetW(L"othermsg/ENGLISH/menu.msgbnd.dcx", mapped) && !mapRespecAssetW(L"msg/ENGLISH/menu.msgbnd.dcx.bak", mapped), "asset path boundaries enforced");

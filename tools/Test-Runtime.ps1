@@ -20,6 +20,10 @@ if ($LASTEXITCODE -ne 0) { throw 'Game presentation tests failed.' }
 if ($LASTEXITCODE -ne 0) { throw 'Respec test build failed.' }
 & (Join-Path $temporary 'Test-Respec.exe') (Join-Path $game 'DarkSoulsRemastered.exe')
 if ($LASTEXITCODE -ne 0) { throw 'Respec tests failed.' }
+& $Compiler @common (Join-Path $PSScriptRoot 'Test-BonfireIds.c') -municode -o (Join-Path $temporary 'Test-BonfireIds.exe')
+if ($LASTEXITCODE -ne 0) { throw 'Bonfire ID test build failed.' }
+& (Join-Path $temporary 'Test-BonfireIds.exe') (Join-Path $game 'DarkSoulsRemastered.exe')
+if ($LASTEXITCODE -ne 0) { throw 'Native bonfire ID tests failed.' }
 & $Compiler @common (Join-Path $PSScriptRoot 'Test-ParamOverride.c') -municode -o (Join-Path $temporary 'Test-ParamOverride.exe')
 if ($LASTEXITCODE -ne 0) { throw 'Parameter redirection test build failed.' }
 $parameterFixture = Join-Path $temporary ([Guid]::NewGuid().ToString())
@@ -27,12 +31,19 @@ $parameterDirectory = Join-Path $parameterFixture '.local\game\param\GameParam'
 New-Item -ItemType Directory -Path $parameterDirectory -Force | Out-Null
 [IO.File]::WriteAllBytes((Join-Path $parameterDirectory 'GameParam.parambnd.dcx'), [Text.Encoding]::ASCII.GetBytes('TEST'))
 $assetFixture = Join-Path $parameterFixture '.local\respec'
-foreach ($relative in @('script\talk\m10_00_00_00.talkesdbnd.dcx', 'msg\ENGLISH\menu.msgbnd.dcx', 'menu\menu.drb', 'menu\menu.drb.dcx')) {
+$overrideNames = @('msg\ENGLISH\item.msgbnd.dcx', 'map\m14\GI_EnvM_m14.tpfbhd', 'map\m14\GI_EnvM_m14.tpfbdt', 'script\talk\m10_00_00_00.talkesdbnd.dcx', 'msg\ENGLISH\menu.msgbnd.dcx', 'menu\menu.drb', 'menu\menu.drb.dcx',
+    'map\MapStudio\m10_02_00_00.msb', 'map\MapStudio\m14_01_00_00.msb', 'map\m14_01_00_00\m9900B1A14.flver.dcx',
+    'map\m14_01_00_00\m9901B1A14.flver.dcx', 'map\m14\m14_9999.tpf.dcx', 'param\DrawParam\a14_DrawParam.parambnd.dcx',
+    'map\m14_01_00_00\m14_01_00_00.nvmbnd.dcx', 'map\m14_01_00_00\m14_01_00_00.mcp', 'map\m14_01_00_00\m14_01_00_00.mcg',
+    'map\m14_01_00_00\h14_01_00_00.hkxbhd', 'map\m14_01_00_00\h14_01_00_00.hkxbdt',
+    'map\m14_01_00_00\l14_01_00_00.hkxbhd', 'map\m14_01_00_00\l14_01_00_00.hkxbdt',
+    'event\m10_02_00_00.emevd.dcx', 'event\m14_01_00_00.emevd.dcx')
+foreach ($relative in $overrideNames) {
     $target = Join-Path $assetFixture $relative
     New-Item -ItemType Directory -Path (Split-Path -Parent $target) -Force | Out-Null
     [IO.File]::WriteAllBytes($target, [Text.Encoding]::ASCII.GetBytes('TEST'))
 }
-[IO.File]::WriteAllLines((Join-Path $assetFixture 'overrides.txt'), [string[]]@('script\talk\m10_00_00_00.talkesdbnd.dcx', 'msg\ENGLISH\menu.msgbnd.dcx', 'menu\menu.drb', 'menu\menu.drb.dcx'), [Text.Encoding]::ASCII)
+[IO.File]::WriteAllLines((Join-Path $assetFixture 'overrides.txt'), [string[]]$overrideNames, [Text.Encoding]::ASCII)
 & (Join-Path $temporary 'Test-ParamOverride.exe') (Join-Path $game 'DarkSoulsRemastered.exe') $parameterFixture
 if ($LASTEXITCODE -ne 0) { throw 'Parameter redirection tests failed.' }
 & $Compiler @common (Join-Path $PSScriptRoot 'Test-SaveExtension.c') -municode -o (Join-Path $temporary 'Test-SaveExtension.exe')

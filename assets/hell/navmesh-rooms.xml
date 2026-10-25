@@ -1,0 +1,9 @@
+<?xml version='1.0' encoding='utf-8'?>
+<hell version="1" size="2472" sha256="7f1fc5d1d3d58a2acb26acba6fcd0c88f6b1146e2b7f33496fe8923049eefc3e" compression="-1">
+  <source path="map/m14_01_00_00/m14_01_00_00.mcp" offset="0" length="0" inflate="false" sha256="1763396c5570cf8b9425997da54fd2e7f28c6cbe65c427ac6f211078d3111b0a" />
+  <bytes>AgAAANGFQAAzAAAAsA==</bytes>
+  <copy source="0" offset="13" length="411" />
+  <bytes>MgAAADE=</bytes>
+  <copy source="0" offset="421" length="1963" />
+  <bytes>AAABDjEAAAABAAAAqAEAABxwuEQAAL/Dw3utQuSPvkSaGbzD2y8JQwAAAQ4yAAAAAQAAAKwBAAAccLhEAAC/wwAAl0Lkj75EAAC9w+vOyUI=</bytes>
+</hell>

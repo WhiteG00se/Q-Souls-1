@@ -2,11 +2,12 @@ function Initialize-Respec {
     param([string]$GamePath, [string]$Repository, [switch]$ValidateOnly)
     if (-not ('RespecAssets' -as [type])) {
         # Compile together: Add-Type assemblies are not persisted as third-party dependencies.
-        Add-Type -Path @((Join-Path $PSScriptRoot 'StartingClasses.cs'), (Join-Path $PSScriptRoot 'RespecAssets.cs'))
+        Add-Type -Path @((Join-Path $PSScriptRoot 'StartingClasses.cs'), (Join-Path $PSScriptRoot 'RespecAssets.cs'), (Join-Path $PSScriptRoot 'HellAssets.cs')) -ReferencedAssemblies @('System.dll', 'System.Core.dll', 'System.Xml.dll')
     }
     $bonfires = 0
     $files = [RespecAssets]::Generate($GamePath, [ref]$bonfires, (Join-Path $PSScriptRoot '..\assets\text\RespecLocales.inc'))
-    Write-Host "Respec: $bonfires bonfire scripts validated."
+    [HellAssets]::Add($GamePath, (Join-Path $PSScriptRoot '..\assets\hell'), $files)
+    Write-Host "Respec: $bonfires bonfire scripts validated. Cursed Arena assets validated."
     if ($ValidateOnly) { return }
     $root = [IO.Path]::GetFullPath((Join-Path $Repository '.local\respec')).TrimEnd('\')
     $game = [IO.Path]::GetFullPath($GamePath).TrimEnd('\')

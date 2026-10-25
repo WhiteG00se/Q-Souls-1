@@ -1,0 +1,10 @@
+<?xml version='1.0' encoding='utf-8'?>
+<hell version="1" size="549328" sha256="c45c79d28e40289bd0e26ebe3a46b5c0c5c58e9797548523de47ef9104363a4d" compression="0">
+  <source path="map/m10/GI_EnvM_m10.tpfbdt" offset="37308544" length="542038" inflate="true" sha256="6b1ca5fa320f013dd12302d1acb4e2be693cff3daa8624cda774e372192fd511" />
+  <bytes>VFBGAGphCAACAAAAAAMCAGg=</bytes>
+  <copy source="0" offset="17" length="19" />
+  <bytes>/GA=</bytes>
+  <copy source="0" offset="38" length="30" />
+  <bytes>NF8wMV8wMDA4AEdJX0VudlNwY19tMTRfMDFfMDAwOF8w</bytes>
+  <copy source="0" offset="131" length="549227" />
+</hell>

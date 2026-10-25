@@ -7,6 +7,21 @@ static BOOL respecAssetName(const wchar_t *name)
 {
     size_t n = wcslen(name);
     if (!n || n >= 128 || wcsstr(name, L"..") || wcschr(name, L':') || wcschr(name, L'/')) return FALSE;
+    // Exact arena assets only; never expose an unrestricted map/event override.
+    static const wchar_t *hellAssets[] = {
+        L"map\\MapStudio\\m10_02_00_00.msb", L"map\\MapStudio\\m14_01_00_00.msb",
+        L"map\\m14_01_00_00\\m9900B1A14.flver.dcx",
+        L"map\\m14_01_00_00\\m9901B1A14.flver.dcx", L"map\\m14\\m14_9999.tpf.dcx",
+        L"map\\m14\\GI_EnvM_m14.tpfbhd", L"map\\m14\\GI_EnvM_m14.tpfbdt",
+        L"param\\DrawParam\\a14_DrawParam.parambnd.dcx",
+        L"map\\m14_01_00_00\\m14_01_00_00.nvmbnd.dcx",
+        L"map\\m14_01_00_00\\m14_01_00_00.mcp", L"map\\m14_01_00_00\\m14_01_00_00.mcg",
+        L"map\\m14_01_00_00\\h14_01_00_00.hkxbhd", L"map\\m14_01_00_00\\h14_01_00_00.hkxbdt",
+        L"map\\m14_01_00_00\\l14_01_00_00.hkxbhd", L"map\\m14_01_00_00\\l14_01_00_00.hkxbdt",
+        L"event\\m10_02_00_00.emevd.dcx", L"event\\m14_01_00_00.emevd.dcx"
+    };
+    for (size_t i = 0; i < sizeof(hellAssets) / sizeof(*hellAssets); ++i)
+        if (!_wcsicmp(name, hellAssets[i])) return TRUE;
     if (!_wcsnicmp(name, L"script\\talk\\", 12)) {
         const wchar_t *file = name + 12;
         return !wcschr(file, L'\\') && n > 27 && !_wcsicmp(name + n - 15, L".talkesdbnd.dcx");
@@ -14,7 +29,7 @@ static BOOL respecAssetName(const wchar_t *name)
     if (!_wcsicmp(name, L"menu\\menu.drb") || !_wcsicmp(name, L"menu\\menu.drb.dcx")) return TRUE;
     if (!_wcsnicmp(name, L"msg\\", 4)) {
         const wchar_t *slash = wcschr(name + 4, L'\\');
-        return slash && slash > name + 4 && !_wcsicmp(slash, L"\\menu.msgbnd.dcx");
+        return slash && slash > name + 4 && (!_wcsicmp(slash, L"\\menu.msgbnd.dcx") || !_wcsicmp(slash, L"\\item.msgbnd.dcx"));
     }
     return FALSE;
 }
