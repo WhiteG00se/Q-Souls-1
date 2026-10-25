@@ -27,7 +27,7 @@ public static class HellAssets
     static bool Compressed(byte[] b) { return b.Length >= 4 && b[0] == 'D' && b[1] == 'C' && b[2] == 'X' && b[3] == 0; }
     public static byte[] Reconstruct(string game, string recipe)
     {
-        var settings = new XmlReaderSettings { DtdProcessing = DtdProcessing.Prohibit, XmlResolver = null, MaxCharactersInDocument = 4000000 };
+        var settings = new XmlReaderSettings { DtdProcessing = DtdProcessing.Prohibit, XmlResolver = null, MaxCharactersInDocument = 8 * 1024 * 1024 };
         var document = new XmlDocument { XmlResolver = null };
         using (var reader = XmlReader.Create(recipe, settings)) document.Load(reader);
         XmlElement root = document.DocumentElement;

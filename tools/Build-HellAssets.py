@@ -31,7 +31,7 @@ _setup_log = _logging.setup
 _logging.setup = lambda **kw: _setup_log(**(kw | {"log_path": Path(args.temporary) / "soulstruct-build.log"}))
 import numpy as np
 from soulstruct.containers import Binder, BinderEntry, TPF
-from AreaGeometry import RADIUS, BONFIRE_LOCAL, ARRIVAL_LOCAL, LAVA_Y, DROP_DISTANCE, island, lava, boulder, barrier
+from AreaGeometry import RADIUS, BONFIRE_LOCAL, ARRIVAL_LOCAL, LAVA_Y, DROP_DISTANCE, island, lava, boulder, barrier, ground_patch, grass, cover_rock, cover_footprints, COVER_ROCKS
 from soulstruct.darksouls1r.maps import MSB
 from soulstruct.darksouls1r.models import FLVER
 from soulstruct.darksouls1r.events import EMEVD
@@ -152,7 +152,7 @@ def append_clone(seq, original, **values):
     return entry
 
 
-# The fighting circle stays flat; only the short spur rises to the bonfire.
+# Strong relief shares one surface between rendering, collision and navigation.
 vertices, triangles, walk_triangles, footprint = island()
 # Reuse the existing ground and animated lava shaders and texture bindings verbatim.
 base_file = f'map/{MAP}/m0170B1A14.flver.dcx'
@@ -165,7 +165,7 @@ lava_flver.debone_map_piece()
 lava_template = next(mesh for mesh in lava_flver.meshes if 'A14_lava_M_02' in mesh.material.mat_def_path)
 
 
-def mesh_from(template, verts, faces, cylindrical=False):
+def mesh_from(template, verts, faces, cylindrical=False, smooth_floor=False, blade_uv=False):
     mesh = copy.deepcopy(template)
     # Split at faces for rock facets and wall UVs, rather than stretching the
     # floor's horizontal UV projection vertically up a paper-thin border.
@@ -176,13 +176,25 @@ def mesh_from(template, verts, faces, cylindrical=False):
     normal = np.cross(verts[faces[:, 1]] - verts[faces[:, 0]], verts[faces[:, 2]] - verts[faces[:, 0]])
     normal /= np.maximum(np.linalg.norm(normal, axis=1, keepdims=True), 1e-8)
     a['normal'] = np.repeat(normal, 3, axis=0)
+    if smooth_floor:
+        # Area-weighted floor normals remain continuous across material patches.
+        normals=np.zeros_like(verts)
+        floor=verts[walk_triangles]
+        weighted=np.cross(floor[:,1]-floor[:,0],floor[:,2]-floor[:,0])
+        for j in range(3):np.add.at(normals,walk_triangles[:,j],weighted)
+        normals/=np.maximum(np.linalg.norm(normals,axis=1,keepdims=True),1e-8)
+        walk_keys=set(map(tuple,walk_triangles))
+        mask=np.array([tuple(face) in walk_keys for face in faces])
+        a['normal'].reshape(-1,3,3)[mask]=normals[faces[mask]]
     # Preserve native NormalW packing (127), including for non-skinned meshes.
     a['normal_w'] = template.vertex_arrays[0].array['normal_w'][0]
     tangents = np.empty((len(faces), 4),dtype=np.float32)
     uv = np.empty((len(faces), 3, 2), dtype=np.float32)
     for i,n in enumerate(normal):
         p=verts[faces[i]]
-        if cylindrical:
+        if blade_uv:
+            uv[i]=[[0.,1.],[.16,1.],[.08,0.]]
+        elif cylindrical:
             theta=np.arctan2(p[:,2],p[:,0])
             if theta.max()-theta.min()>math.pi:theta[theta<0]+=math.tau
             uv[i]=np.column_stack([theta*RADIUS/3.,-p[:,1]/3.])
@@ -202,6 +214,14 @@ def mesh_from(template, verts, faces, cylindrical=False):
     a['tangent_0'] = np.repeat(tangents, 3, axis=0)
     a['color_0'] = [1, 1, 1, 1]
     a['uv_0'] = uv.reshape(-1, 2)
+    if smooth_floor:
+        # Subdued mineral variation follows the relief, avoiding a repeated tile.
+        p=a['position'];shade=.88+.08*np.sin(p[:,0]*.43+p[:,2]*.31)
+        shade+=.025*np.clip(p[:,1],-2.5,3.)
+        a['color_0'][:,:3]=shade[:,None]
+        t=a['tangent_0'][:,:3];n=a['normal']
+        t-=n*(t*n).sum(1,keepdims=True)
+        t/=np.maximum(np.linalg.norm(t,axis=1,keepdims=True),1e-8)
     mesh.vertex_arrays[0].array = a
     mesh.vertex_arrays = mesh.vertex_arrays[:1]
     mesh.default_bone_index = 0
@@ -219,7 +239,11 @@ fall=mesh_from(lava_template,fall_vertices,fall_faces,cylindrical=True)
 fall_array=fall.vertex_arrays[0].array
 fade=np.clip((fall_array['position'][:,1]+28.)/(LAVA_Y+28.),0.,1.)**2
 fall_array['color_0']=np.repeat(fade[:,None],4,axis=1)
-f.meshes=[mesh_from(ground_template,vertices,triangles),flat_lava,fall]
+centres=vertices[walk_triangles].mean(1)
+patch_mask=np.array([ground_patch(x,z) for x,y,z in centres])
+patch_faces=walk_triangles[patch_mask]
+base_faces=np.concatenate([walk_triangles[~patch_mask],triangles[len(walk_triangles):]])
+f.meshes=[mesh_from(ground_template,vertices,base_faces,smooth_floor=True),flat_lava,fall]
 # The former outcrop was only four vertices/two triangles. Keep its native
 # rock material, replace those flat strips with genuinely closed boulders.
 rock_file=f'map/{MAP}/m0100B1A14.flver.dcx'
@@ -227,12 +251,29 @@ rock=FLVER.from_path(GAME/rock_file);rock.debone_map_piece()
 for i in range(10):
     rock_vertices,rock_faces=boulder(i)
     f.meshes.append(mesh_from(rock.meshes[0],rock_vertices,rock_faces))
+# Flush material islands replace floor faces, avoiding overlapping decals.
+f.meshes.append(mesh_from(rock.meshes[0],vertices,patch_faces,smooth_floor=True))
+grass_vertices,grass_faces,grass_layout=grass(vertices,walk_triangles,walk_triangles[~patch_mask])
+rng=np.random.default_rng(9914)
+# Keep every FLVER vertex buffer comfortably within native 16-bit indices.
+for start in range(0,len(grass_faces),8192):
+    batch=grass_faces[start:start+8192]
+    blades=mesh_from(ground_template,grass_vertices,batch,blade_uv=True)
+    blades.face_sets[0].use_backface_culling=False
+    blade_array=blades.vertex_arrays[0].array
+    tint=rng.uniform(.85,1.10,(len(batch),1)).repeat(3,axis=0)
+    blade_array['color_0'][:,:3]=np.array([.32,.36,.19])*tint
+    f.meshes.append(blades)
+cover_geometry=[cover_rock(i,vertices,walk_triangles) for i in range(len(COVER_ROCKS))]
+for rock_vertices,rock_faces in cover_geometry:
+    f.meshes.append(mesh_from(rock.meshes[0],rock_vertices,rock_faces))
 f.dummies = []
 f.dcx_type = DCXType.Null
 f.refresh_bounding_boxes(); f.refresh_bone_bounding_boxes()
 flver_data = bytes(f)
 check = FLVER.from_bytes(flver_data)
-assert len(check.meshes) == 13
+assert len(check.meshes) == 19+math.ceil(len(grass_faces)/8192)
+print('Grass layout:', grass_layout)
 recipe('terrain', [source(base_file, inflate=True), source(lava_file, inflate=True), source(rock_file, inflate=True)], flver_data, 0)
 
 # Reuse Darkroot's actual outdoor night sky and its existing texture, loaded
@@ -369,7 +410,11 @@ faces4 = np.column_stack([triangles, np.zeros(len(triangles), dtype=np.uint32)])
 barrier_v,barrier_f=barrier(footprint)
 barrier_v4=np.column_stack([barrier_v,np.zeros(len(barrier_v),dtype=np.float32)])
 barrier_f4=np.column_stack([barrier_f,np.zeros(len(barrier_f),dtype=np.uint32)]).astype(np.uint16)
-model = MapCollisionModel(name='h9900B1', meshes=[MapCollisionModelMesh(verts4, faces4, 3),MapCollisionModelMesh(barrier_v4,barrier_f4,3)])
+cover_vertices=np.concatenate([v for v,f in cover_geometry])
+cover_faces=np.concatenate([f+sum(len(v) for v,_ in cover_geometry[:i]) for i,(_,f) in enumerate(cover_geometry)])
+cover_v4=np.column_stack([cover_vertices,np.zeros(len(cover_vertices),dtype=np.float32)])
+cover_f4=np.column_stack([cover_faces,np.zeros(len(cover_faces),dtype=np.uint32)]).astype(np.uint16)
+model = MapCollisionModel(name='h9900B1', meshes=[MapCollisionModelMesh(verts4, faces4, 3),MapCollisionModelMesh(barrier_v4,barrier_f4,3),MapCollisionModelMesh(cover_v4,cover_f4,3)])
 hkx = model.to_hkx()
 hkx.dcx_type = DCXType.Null
 hkx_data = bytes(hkx)
@@ -454,11 +499,15 @@ mcg.set_navmesh_references(m.navmeshes)
 assert len(mcp.aabbs) == len(m.navmeshes)
 navs, models, gate_triangles = [], [], []
 next_id = max(e.entry_id for e in nvm_binder.entries) + 1
+# Keep navigation clear of the solid rocks, including a small walking margin.
+from shapely.geometry import Polygon
+rock_footprints=cover_footprints()
+nav_triangles=walk_triangles[[not any(Polygon(vertices[face][:,[0,2]]).intersects(rock) for rock in rock_footprints) for face in walk_triangles]]
 for half in range(2):
     # Split the actual walkable circle/ramp/landing at Z=0. Both rooms stay
     # isolated from vanilla routes and the positive half contains the bonfire.
-    centres=vertices[walk_triangles].mean(1)
-    selection=walk_triangles[(centres[:,2]>=0) if half==0 else (centres[:,2]<0)]
+    centres=vertices[nav_triangles].mean(1)
+    selection=nav_triangles[(centres[:,2]>=0) if half==0 else (centres[:,2]<0)]
     used,inverse=np.unique(selection,return_inverse=True)
     points=vertices[used]
     faces=[tuple(int(j) for j in f) for f in inverse.reshape(-1,3)]
@@ -472,7 +521,7 @@ for half in range(2):
         for a, b in [(face[0], face[1]), (face[1], face[2]), (face[0], face[2])]:
             neighbours.append(next((j for j in edge_faces[tuple(sorted((a, b)))] if j != i), -1))
         tris.append(NVMTriangle(face, tuple(neighbours), 0, 0))
-    nvm = NVM(vertices=points, triangles=tris)
+    nvm = NVM(vertices=points, triangles=tris, dcx_type=DCXType.Null)
     model_name = f'n{9900 + half}B1'
     nav_model = append_clone(m.navmesh_models, m.navmesh_models[0], name=model_name,
                              sib_path=m.navmesh_models[0].sib_path.replace(m.navmesh_models[0].name, model_name))

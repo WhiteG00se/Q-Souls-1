@@ -52,7 +52,7 @@ print('PASS: all original map records unchanged; only intended entries appended.
 
 # Validate what the renderer actually culls, not merely the triangle positions.
 f = FLVER.from_path(F / 'map/m14_01_00_00/m9900B1A14.flver.dcx')
-assert len(f.meshes) == 13
+assert len(f.meshes) == 24
 v = f.meshes[0].vertex_arrays[0].array['position']
 faces = f.meshes[0].face_sets[0].vertex_indices
 for mesh in f.meshes:
@@ -71,7 +71,62 @@ nf = native.face_sets[0].triangulate(True)
 np_ = na['position'][nf]
 assert np.all((np.cross(np_[:, 1]-np_[:, 0], np_[:, 2]-np_[:, 0]) * na['normal'][nf].mean(1)).sum(1) < 0)
 r = np.linalg.norm(v[:, [0, 2]], axis=1)
-assert np.max(np.abs(v[(r <= 24.001) & (v[:, 1] > -.1), 1])) < .001, '48 m fighting circle stays flat.'
+surface=np.concatenate([f.meshes[i].vertex_arrays[0].array['position'][f.meshes[i].face_sets[0].vertex_indices[:,[0,2,1]]] for i in (0,13)])
+normals=np.cross(surface[:,1]-surface[:,0],surface[:,2]-surface[:,0])
+inside=(np.linalg.norm(surface[:,:,[0,2]],axis=2)<23.9).all(1)&(surface[:,:,1]>-3.).all(1)
+assert inside.any() and np.all(normals[inside,1]>0)
+floor_v=surface[inside].reshape(-1,3)
+assert -1.3<floor_v[:,1].min()<-.75 and .55<floor_v[:,1].max()<.9
+assert np.max(np.linalg.norm(normals[inside][:,[0,2]],axis=1)/normals[inside,1])<.8, 'Rolling terrain stays below a 39 degree slope.'
+patch=f.meshes[13]
+assert patch.material==FLVER.from_path(G/'map/m14_01_00_00/m0100B1A14.flver.dcx').meshes[0].material
+patch_v=patch.vertex_arrays[0].array['position']
+assert len(patch_v)>1000 and np.linalg.norm(patch_v[:,[0,2]],axis=1).max()<24.
+patch_tri=patch_v[patch.face_sets[0].vertex_indices]
+patch_area=np.abs(np.cross(patch_tri[:,1]-patch_tri[:,0],patch_tri[:,2]-patch_tri[:,0])[:,1]).sum()/2
+assert 330.<patch_area<345., 'Stone coverage must be approximately 0.3 times the former 1,126 square metres.'
+from shapely import union_all, prepare
+from shapely.geometry import Polygon
+stone_region=union_all([Polygon(tri[:,[0,2]]) for tri in patch_tri])
+stone_patches=list(stone_region.geoms) if stone_region.geom_type=='MultiPolygon' else [stone_region]
+assert len(stone_patches)>70 and max(p.area for p in stone_patches)<25., 'Stone should form small, irregular scattered patches.'
+grass_meshes=f.meshes[14:-5]
+g=np.concatenate([mesh.vertex_arrays[0].array for mesh in grass_meshes])
+assert all(not mesh.face_sets[0].use_backface_culling and len(mesh.vertex_arrays[0].array)<65536 for mesh in grass_meshes)
+assert np.all(g['color_0'][:,1]>g['color_0'][:,0]) and np.all(g['color_0'][:,0]>g['color_0'][:,2])
+blades=np.concatenate([mesh.vertex_arrays[0].array['position'][mesh.face_sets[0].vertex_indices] for mesh in grass_meshes])
+blade_heights=blades[:,:,1].max(1)-blades[:,:,1].min(1)
+assert np.all((blade_heights>.075)&(blade_heights<1.55))
+tall_mask=blade_heights>.6
+assert np.count_nonzero(tall_mask)==5760 and np.count_nonzero(~tall_mask)==29694
+assert np.all(blade_heights[~tall_mask]<.6), 'Only short grass remains at the former interior clumps.'
+tall=blades[tall_mask]
+assert np.all(np.linalg.norm(tall[:,:,[0,2]],axis=2)>21.99)
+assert np.all(np.linalg.norm(tall[:,:,[0,2]],axis=2)<23.76), 'Tall grass belongs only in the outer border band.'
+roots=np.take_along_axis(tall,np.argsort(tall[:,:,1],axis=1)[:,:2,None],axis=1).mean(1)
+angles=np.mod(np.arctan2(roots[:,2],roots[:,0]),np.pi*2)
+sectors=(angles/(np.pi*2)*96).astype(int)
+sector_counts=np.bincount(sectors,minlength=96)
+occupied_sectors=sector_counts>0
+assert np.count_nonzero(occupied_sectors)==32, 'Tall grass must cover one third of the border.'
+assert np.count_nonzero(occupied_sectors & ~np.roll(occupied_sectors,1))==4, 'Border grass forms four contiguous runs, not scattered single tiles.'
+assert np.all(sector_counts[occupied_sectors]==180)
+assert not occupied_sectors[20:29].any(), 'The bonfire approach stays clear of tall grass.'
+print('PASS: all tall grass moved into four adjoining-tile border stretches covering 32 of 96 border sectors.')
+# Test against the actual serialized materials, including the leaned tips.
+dirt_tri=v[faces[:,[0,2,1]]]
+dirt_up=np.cross(dirt_tri[:,1]-dirt_tri[:,0],dirt_tri[:,2]-dirt_tri[:,0])[:,1]>0
+from AreaGeometry import outline, cover_footprints
+from shapely.geometry import Point
+walk_outline=outline()
+inside_walk=np.array([walk_outline.covers(Point(tri[:,0].mean(),tri[:,2].mean())) for tri in dirt_tri])
+dirt_region=union_all([Polygon(tri[:,[0,2]]) for tri in dirt_tri[dirt_up & inside_walk]])
+prepare(dirt_region);prepare(stone_region)
+for blade in blades:
+    projected=Polygon(blade[:,[0,2]])
+    assert dirt_region.covers(projected) and not stone_region.intersects(projected), 'Grass must grow entirely on ground, never on stone.'
+assert all(np.allclose(np.linalg.norm(mesh.vertex_arrays[0].array['normal'],axis=1),1.,atol=.015) for mesh in f.meshes)
+
 assert 3.09 < v[:,1].max() < 3.11 and v[:,1].min() < -5.4
 # The rim and ramp occupy real volume; no paper-thin outcrop meshes remain.
 rim=(r>24.14)&(r<24.16)&(v[:,2]<-5)
@@ -84,7 +139,7 @@ fall_a=f.meshes[2].vertex_arrays[0].array
 assert np.isclose(fall_a['position'][:,1].min(),-28)
 assert np.all(fall_a['color_0'][fall_a['position'][:,1]<-27.9]==0)
 assert np.max(np.linalg.norm(fall_a['position'][fall_a['position'][:,2]<0][:,[0,2]],axis=1))<52.77
-for mesh in f.meshes[3:]:
+for mesh in f.meshes[3:13]:
     a=mesh.vertex_arrays[0].array
     rock_v=np.unique(a['position'],axis=0)
     assert np.linalg.matrix_rank(rock_v-rock_v.mean(0))==3
@@ -106,14 +161,19 @@ for prefix in 'hl':
     c = MapCollisionModel.from_hkx(HKX.from_bytes(after.entries[-1].data))
     assert c.name == prefix+'9900B1' and c.meshes[0].material_index == 3
     cv, cf = c.meshes[0].vertices[:, :3], c.meshes[0].faces[:, :3]
-    assert np.allclose(cv[cf], v[faces[:, [0,2,1]]]), 'Visual shell and collision must match after reversing rendering winding.'
+    def triangle_keys(triangles):
+        return sorted(tuple(sorted(tuple(p) for p in triangle)) for triangle in triangles)
+    assert triangle_keys(cv[cf])==triangle_keys(surface), 'Both ground materials must exactly match collision.'
     edge_counts = {}
     for face in cf:
         for x,y in [(face[0],face[1]),(face[1],face[2]),(face[2],face[0])]:
             edge=tuple(sorted((int(x),int(y))))
             edge_counts[edge]=edge_counts.get(edge,0)+1
     assert set(edge_counts.values())=={2}, 'Island must be a closed, solid manifold, not a 2D wall.'
-    assert len(c.meshes)==2, 'Independent collision-only safety barrier required.'
+    assert len(c.meshes)==3, 'Independent safety barrier and solid cover-rock collision required.'
+    cover_surface=np.concatenate([mesh.vertex_arrays[0].array['position'][mesh.face_sets[0].vertex_indices[:,[0,2,1]]] for mesh in f.meshes[-5:]])
+    rock_collision=c.meshes[2]
+    assert triangle_keys(rock_collision.vertices[rock_collision.faces[:,:3],:3])==triangle_keys(cover_surface), 'All five rocks must have exact matching collision.'
     bv,bf=c.meshes[1].vertices[:,:3],c.meshes[1].faces[:,:3]
     edge_counts={}
     for face in bf:
@@ -142,14 +202,29 @@ def height_at(x,z):
     assert hit.any(),(x,z)
     y=walk[:,0,1]+u*(walk[:,1,1]-walk[:,0,1])+t*(walk[:,2,1]-walk[:,0,1])
     return y[hit].min()
-for x,z in [(0,0),(23,0),(-23,0),(0,-23),(0,23),(10,10)]:assert abs(height_at(x,z))<1e-4
+for x,z in [(23.9,0),(-23.9,0),(0,-23.9),(0,23.9)]:assert abs(height_at(x,z))<.03
+for cx,cz in [(-10,-7),(9,5)]:
+    for x in np.linspace(cx-1.5,cx+1.5,7):
+        for z in np.linspace(cz-1.5,cz+1.5,7):assert -.12<height_at(x,z)<.13, 'Former large hills stay barely raised.'
+for x,z in [(-7,12),(13,-11)]:assert .5<height_at(x,z)<.85
+for x,z in [(2,-10),(-12,5),(4,14)]:assert -1.3<height_at(x,z)<-.4
+from AreaGeometry import COVER_ROCKS
+for mesh,(x,z,sx,sz,h) in zip(f.meshes[-5:],COVER_ROCKS):
+    rock_v=mesh.vertex_arrays[0].array['position']
+    assert 1.7<rock_v[:,1].max()-height_at(x,z)<2.2
+    _,inverse=np.unique(rock_v,axis=0,return_inverse=True)
+    rock_faces=inverse[mesh.face_sets[0].vertex_indices]
+    edges=np.sort(np.concatenate([rock_faces[:,[0,1]],rock_faces[:,[1,2]],rock_faces[:,[2,0]]]),axis=1)
+    assert np.all(np.unique(edges,axis=0,return_counts=True)[1]==2), 'Cover rocks must be closed solids.'
+for blade in blades:
+    for p in blade[np.argsort(blade[:,1])[:2]]:assert abs(p[1]-height_at(p[0],p[2]))<.025, 'Grass roots must sit on the rendered collision surface.'
 for z in np.linspace(24.1,29.4,20):assert abs(height_at(0,z)-1.8*(z-24)/5.5)<.02
 pad_z=29.5+np.sqrt(3.75**2-1.5**2)
 for x,z in [(0,pad_z+.4),(0,pad_z-.8),(3.5,pad_z),(-3.5,pad_z),(0,pad_z+3.5)]:assert abs(height_at(x,z)-1.8)<.001
 # The neck remains a rectangle; the enlarged landing has its own circular sides.
 assert height_at(1.4,27.)>0
 assert np.any((np.abs(v[:,0])>3.5)&(np.abs(v[:,2]-pad_z)<1.5)&(np.abs(v[:,1]-1.8)<.001))
-print('PASS: native clockwise rendering, opaque floor/lava materials, solid rocky island, matching high/low collision, and reused outcrops.')
+print('PASS: grouped tall border grass, retained short grass, no grass on stone, unchanged terrain and five solid cover rocks with matching collision.')
 
 # The native sky is clipped at the horizon so there is darkness below the lava fall.
 sky = FLVER.from_path(F/'map/m14_01_00_00/m9901B1A14.flver.dcx')
@@ -268,6 +343,7 @@ old_n=Binder.from_path(G/'map/m14_01_00_00/m14_01_00_00.nvmbnd.dcx')
 new_n=Binder.from_path(F/'map/m14_01_00_00/m14_01_00_00.nvmbnd.dcx')
 assert len(new_n.entries)==len(old_n.entries)+2
 for old,new in zip(old_n.entries,new_n.entries):assert old.data==new.data and old.path==new.path
+nav_surface=[]
 for nav,e in zip(list(m.navmeshes)[-2:],new_n.entries[-2:]):
     assert PureWindowsPath(nav.model.sib_path).stem == nav.model.name
     assert e.name == nav.model.name + 'A14.nvm'
@@ -276,8 +352,16 @@ for nav,e in zip(list(m.navmeshes)[-2:],new_n.entries[-2:]):
     assert len(n.triangles)>20
     tri = np.array([t.vertex_indices for t in n.triangles])
     points = n.vertices[tri]
+    nav_surface.extend(points)
     assert np.all(np.cross(points[:,1]-points[:,0], points[:,2]-points[:,0])[:,1] > 0)
     assert all(all(j==-1 or 0<=j<len(n.triangles) for j in t.connected_indices) for t in n.triangles)
+nav_surface=np.asarray(nav_surface)
+from AreaGeometry import outline, cover_footprints
+from shapely.geometry import Point, Polygon
+walk_outline=outline()
+rock_footprints=cover_footprints()
+expected_walk=surface[[walk_outline.covers(Point(t[:,0].mean(),t[:,2].mean())) and np.cross(t[1]-t[0],t[2]-t[0])[1]>0 and not any(Polygon(t[:,[0,2]]).intersects(rock) for rock in rock_footprints) for t in surface]]
+assert triangle_keys(nav_surface)==triangle_keys(expected_walk), 'Navigation follows the relief and routes around all five cover rocks.'
 print('PASS: complete native navigation/loading graph; bonfire covered by active rooms; no navigation connection to vanilla routes; original graph entries preserved.')
 
 # Existing events retain all instructions, argument replacements, and restart behavior.
