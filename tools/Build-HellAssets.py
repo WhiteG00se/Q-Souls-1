@@ -307,12 +307,51 @@ for mesh in sky.meshes:
 sky.dcx_type = DCXType.Null
 sky.refresh_bounding_boxes(); sky.refresh_bone_bounding_boxes()
 recipe('sky', [source(sky_file, inflate=True)], bytes(sky), 0)
+# Resolve the actual Firelink bonfire settings rather than assuming every bank
+# uses row 20 (its ambient light uses 25).
+firelink_map = MSB.from_path(GAME / 'map/MapStudio/m10_02_00_00.msb')
+firelink_collision = next(c for c in firelink_map.collisions if c.attached_bonfire == 1021960)
+lighting_file = 'param/DrawParam/a14_DrawParam.parambnd.dcx'
+firelink_lighting_file = 'param/DrawParam/a10_DrawParam.parambnd.dcx'
+lighting = DrawParamBND.from_path(GAME / lighting_file)
+firelink_lighting = DrawParamBND.from_path(GAME / firelink_lighting_file)
+bank_fields = dict(LightBank='ambient_light_id', s_LightBank='ambient_light_id',
+                   FogBank='fog_id', LightScatteringBank='scattered_light_id',
+                   LensFlareExBank='lens_flare_id', ShadowBank='shadow_id',
+                   DofBank='dof_id', ToneMapBank='tone_map_id',
+                   PointLightBank='point_light_id', ToneCorrectBank='tone_correction_id')
+def firelink_row(bank):
+    rows = firelink_lighting.draw_params_0[bank].rows
+    field = bank_fields.get(bank)
+    return rows.get(getattr(firelink_collision, field) if field else 0, rows[0])
+
 texture_file = 'map/m14/m14_9999.tpf.dcx'
 night_textures = 'map/m12/m12_9999.tpf.dcx'
+firelink_textures_file = 'map/m10/m10_9999.tpf.dcx'
 textures = TPF.from_path(GAME / texture_file)
 night = TPF.from_path(GAME / night_textures)
+firelink_textures = TPF.from_path(GAME / firelink_textures_file)
 assert 'm12_sky' not in {t.stem for t in textures.textures}
 textures.textures.append(copy.deepcopy(next(t for t in night.textures if t.stem == 'm12_sky')))
+# LightBank texture IDs are literal three-digit suffixes, not GI probe IDs.
+# Reserve even absent native slots so new textures cannot change vanilla rows.
+env_fields = ['DiffuseLightTextureID'] + [f'SpecularLightTextureID{i}' for i in range(4)]
+used_ids = {int(t.stem.rsplit('_', 1)[1]) for t in textures.textures
+            if re.fullmatch(r'Env(?:Dif|Spc)_m14_\d{3}', t.stem)}
+for bank in ('LightBank', 's_LightBank'):
+    used_ids.update(getattr(row, field) for row in lighting.draw_params_0[bank].rows.values() for field in env_fields)
+source_ids = sorted({getattr(firelink_row(bank), field) for bank in ('LightBank', 's_LightBank')
+                     for field in env_fields if getattr(firelink_row(bank), field) >= 0})
+free_ids = [i for i in range(800, 1000) if i not in used_ids]
+assert len(free_ids) >= len(source_ids)
+env_ids = dict(zip(source_ids, free_ids))
+for old_id, new_id in env_ids.items():
+    for kind in ('Dif', 'Spc'):
+        original = next((t for t in firelink_textures.textures if t.stem == f'Env{kind}_m10_{old_id:03d}'), None)
+        if original is not None:
+            texture = copy.deepcopy(original)
+            texture.stem = f'Env{kind}_m14_{new_id:03d}'
+            textures.textures.append(texture)
 textures.dcx_type = DCXType.Null
 texture_data = bytearray(bytes(textures))
 for i, texture in enumerate(textures.textures):
@@ -320,7 +359,8 @@ for i, texture in enumerate(textures.textures):
     # Preserve native PC texture metadata; the library otherwise normalizes mip counts.
     texture_data[16 + i * 20 + 9] = int(texture.texture_type)
     texture_data[16 + i * 20 + 10] = texture.mipmap_count
-recipe('sky-textures', [source(texture_file, inflate=True), source(night_textures, inflate=True)], bytes(texture_data), 0)
+recipe('sky-textures', [source(texture_file, inflate=True), source(night_textures, inflate=True),
+                        source(firelink_textures_file, inflate=True)], bytes(texture_data), 0)
 
 # Bind an actual outdoor GI probe for metallic surfaces. The missing probe
 # previously left reflective weapons black despite readable diffuse lighting.
@@ -343,34 +383,26 @@ for i,texture in enumerate(probe.textures):
     probe_bytes[16+i*20+10]=texture.mipmap_count
 recipe('outdoor-probe',[source(probe_data,probe_offset,probe_size,True)],bytes(probe_bytes),0)
 
-# A dedicated outdoor lighting row affects only the isolated pocket. Reuse
-# Firelink's readable ambient light, warm it from below, and retain night fog.
-lighting_file = 'param/DrawParam/a14_DrawParam.parambnd.dcx'
-lighting = DrawParamBND.from_path(GAME / lighting_file)
-firelink_lighting_file = 'param/DrawParam/a10_DrawParam.parambnd.dcx'
-firelink_lighting = DrawParamBND.from_path(GAME / firelink_lighting_file)
+# Private rows match Firelink, with only ambient texture IDs remapped.
 LIGHTING_ID = 110
 for bank in lighting.draw_params_0:
     dest = lighting.draw_params_0[bank]
-    src = firelink_lighting.draw_params_0[bank]
-    assert LIGHTING_ID not in dest.rows
-    row = copy.deepcopy(src.rows.get(20, src.rows[0]))
+    assert list(dest.rows) == list(range(len(dest.rows)))
+    assert LIGHTING_ID >= len(dest.rows)
+    # The engine indexes the serialized row-pointer array directly. A sparse
+    # row ID 110 at position 65 is never selected by map lighting index 110.
+    # Fill unused positions without changing any original rows.
+    for unused in range(len(dest.rows), LIGHTING_ID):
+        padding = copy.deepcopy(dest.rows[0])
+        padding.Name = 'QS1 Unused'
+        dest.rows[unused] = padding
+    row = copy.deepcopy(firelink_row(bank))
     row.Name = 'QS1 Area Outdoors'
-    if bank == 'LightBank':
-        row.TopDownLightAlpha = 110
-        row.BottomUpLightRed, row.BottomUpLightGreen, row.BottomUpLightBlue = 255, 125, 55
-        row.BottomUpLightAlpha = 160
-        row.BakedLight0Alpha = 130
-        row.DiffuseLightAlpha = 260
-        row.BakedLight1Alpha = 60
-        row.BakedLight2Alpha = 60
-        row.SpecularLightAlpha = 200
-    elif bank == 'FogBank':
-        row.FogStartDistance, row.FogEndDistance = 140, 950
-        row.Red, row.Green, row.Blue, row.Alpha = 25, 30, 45, 100
-    elif bank == 'ToneMapBank':
-        row.OverallBrightness = .22
-        row.MinimumAdaptationBrightness, row.MaximumAdaptationBrightness = .09, .22
+    if bank in ('LightBank', 's_LightBank'):
+        for field in env_fields:
+            old_id = getattr(row, field)
+            if old_id >= 0:
+                setattr(row, field, env_ids[old_id])
     dest.rows[LIGHTING_ID] = row
 # Repack only the edited table entries, preserving all other binder entries.
 lighting_binder = Binder.from_path(GAME / lighting_file)
@@ -480,8 +512,7 @@ for entry in (bonfire, actor):
 
 # A private reference uses a reused Firelink outdoor cubemap, leaving all
 # existing Izalith probes and their lighting unchanged.
-firelink_map=MSB.from_path(GAME/'map/MapStudio/m10_02_00_00.msb')
-probe_template=next(c for c in firelink_map.collisions if c.attached_bonfire==1021960).environment_event
+probe_template=firelink_collision.environment_event
 assert PROBE_ID not in {e.entity_id for e in m.environments}
 probe_region=append_clone(m.regions,probe_template.attached_region,name='QS1_Area_Outdoor_Probe',
                           entity_id=-1,translate=Vector3(CENTRE+[0.,2.,0.]))

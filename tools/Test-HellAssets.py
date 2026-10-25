@@ -1,5 +1,6 @@
 """Static arena validation. Does not start or control Dark Souls Remastered."""
 import argparse
+import copy
 from pathlib import Path, PureWindowsPath
 import struct
 import re
@@ -234,20 +235,84 @@ assert sky.meshes[0].material==native_sky.meshes[0].material
 sky_v=sky.meshes[0].vertex_arrays[0].array['position']
 assert sky_v[:,1].min()>=-3.201 and np.isclose(sky_v[:,1].max(),native_sky.meshes[0].vertex_arrays[0].array['position'][:,1].max()*.45)
 old_pool=TPF.from_path(G/'map/m14/m14_9999.tpf.dcx'); pool=TPF.from_path(F/'map/m14/m14_9999.tpf.dcx')
-assert len(pool.textures)==len(old_pool.textures)+1
+assert len({t.stem for t in pool.textures})==len(pool.textures)
 for old,new in zip(old_pool.textures,pool.textures):assert old==new
 source_sky=next(t for t in TPF.from_path(G/'map/m12/m12_9999.tpf.dcx').textures if t.stem=='m12_sky')
-assert pool.textures[-1]==source_sky
+assert pool.textures[len(old_pool.textures)]==source_sky
 old_light=DrawParamBND.from_path(G/'param/DrawParam/a14_DrawParam.parambnd.dcx')
 light=DrawParamBND.from_path(F/'param/DrawParam/a14_DrawParam.parambnd.dcx')
 for bank,old in old_light.draw_params_0.items():
     new=light.draw_params_0[bank]
-    assert set(new.rows)==set(old.rows)|{110}, (bank, set(new.rows)-set(old.rows))
+    assert list(new.rows)==list(range(111)), (bank, 'Lighting rows must be contiguous through index 110.')
     for rid,row in old.rows.items():assert row==new.rows[rid],(bank,rid)
-assert light.draw_params_0['LightBank'].rows[110].TopDownLightAlpha>=100
-assert light.draw_params_0['LightBank'].rows[110].SpecularLightAlpha==200
-assert light.draw_params_0['FogBank'].rows[110].FogStartDistance>=140
-print('PASS: reused outdoor night sky and original sky texture; dedicated readable outdoor lighting; original lighting and textures unchanged.')
+# Match the native direct-index lookup, independently of Soulstruct's row-ID
+# dictionary. The PC table stores count at 0x0A and 12-byte pointers at 0x30.
+def indexed_draw_row(data, index):
+    count=struct.unpack_from('<H',data,0x0A)[0]
+    if not 0<=index<count:
+        raise IndexError(index)
+    return struct.unpack_from('<iII',data,0x30+index*12)[:2]
+for entry in light.entries:
+    bank=entry.name.removeprefix('m14_').removesuffix('.param').replace('s14_','s_')
+    if bank not in light.draw_params_0:
+        continue
+    row_id,offset=indexed_draw_row(entry.data,110)
+    assert row_id==110, (bank,'Engine index must resolve the arena row.')
+    payload=bytes(light.draw_params_0[bank].rows[110].to_writer())
+    assert entry.data[offset:offset+len(payload)]==payload, bank
+# Reproduce the old sparse table: having a row named 110 must not pass.
+sparse=copy.deepcopy(old_light.draw_params_0['LightBank'])
+sparse.rows[110]=copy.deepcopy(light.draw_params_0['LightBank'].rows[110])
+try:
+    indexed_draw_row(bytes(sparse),110)
+except IndexError:
+    pass
+else:
+    raise AssertionError('Sparse lighting regression was not rejected.')
+print('PASS: native direct-index lookup reaches row 110 in every bank; old sparse layout rejected.')
+firelink_light=DrawParamBND.from_path(G/'param/DrawParam/a10_DrawParam.parambnd.dcx')
+firelink_collision=next(c for c in MSB.from_path(G/'map/MapStudio/m10_02_00_00.msb').collisions if c.attached_bonfire==1021960)
+source_pool=TPF.from_path(G/'map/m10/m10_9999.tpf.dcx')
+source_textures={t.stem:t for t in source_pool.textures}
+output_textures={t.stem:t for t in pool.textures}
+original_names={t.stem for t in old_pool.textures}
+bank_fields=dict(LightBank='ambient_light_id', s_LightBank='ambient_light_id',
+                 FogBank='fog_id', LightScatteringBank='scattered_light_id',
+                 LensFlareExBank='lens_flare_id', ShadowBank='shadow_id', DofBank='dof_id',
+                 ToneMapBank='tone_map_id', PointLightBank='point_light_id', ToneCorrectBank='tone_correction_id')
+env_fields=['DiffuseLightTextureID']+[f'SpecularLightTextureID{i}' for i in range(4)]
+expected_added={'m12_sky'}
+for bank in light.draw_params_0:
+    rows=firelink_light.draw_params_0[bank].rows
+    field=bank_fields.get(bank)
+    expected=copy.deepcopy(rows.get(getattr(firelink_collision,field) if field else 0,rows[0]))
+    actual=light.draw_params_0[bank].rows[110]
+    expected.Name=actual.Name
+    expected.RawName=actual.RawName
+    if bank in ('LightBank','s_LightBank'):
+        for field in env_fields:
+            source_id=getattr(expected,field);target_id=getattr(actual,field)
+            if source_id<0:
+                assert target_id==source_id
+                continue
+            assert target_id>=0 and target_id!=source_id
+            for native in old_light.draw_params_0[bank].rows.values():
+                assert all(getattr(native,f)!=target_id for f in env_fields)
+            kind='Dif' if field=='DiffuseLightTextureID' else 'Spc'
+            source_name=f'Env{kind}_m10_{source_id:03d}'
+            target_name=f'Env{kind}_m14_{target_id:03d}'
+            assert target_name not in original_names
+            original=source_textures.get(source_name)
+            if original is None:
+                assert target_name not in output_textures, 'Preserve empty native reflection slots.'
+            else:
+                texture=copy.deepcopy(original);texture.stem=target_name
+                assert output_textures[target_name]==texture, target_name
+                expected_added.add(target_name)
+            setattr(expected,field,target_id)
+    assert actual==expected, bank
+assert set(output_textures)==original_names|expected_added
+print('PASS: Firelink bonfire lighting, fog and exposure; exact ambient reflection textures with private IDs; original Izalith textures and rows unchanged.')
 
 bonfire = next(o for o in m.objects if o.entity_id == 1411965)
 actor = next(c for c in m.characters if c.entity_id == 1410965)

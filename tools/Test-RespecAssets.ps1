@@ -8,7 +8,7 @@ $originals = @(Get-ChildItem -LiteralPath (Join-Path $GamePath 'script\talk'), (
 $originals += @(Get-Item -LiteralPath (Join-Path $GamePath 'menu\menu.drb'), (Join-Path $GamePath 'menu\menu.drb.dcx'))
 $originals += @(Get-Item -LiteralPath (Join-Path $GamePath 'map\MapStudio\m10_02_00_00.msb'), (Join-Path $GamePath 'map\MapStudio\m14_01_00_00.msb'))
 $originals += @(Get-ChildItem -LiteralPath (Join-Path $GamePath 'map\m14_01_00_00') -File | Where-Object { $_.Name -match '^[hl]14_01_00_00\.hkx(bhd|bdt)$|^m(0010|0170)B1A14\.flver\.dcx$' })
-foreach ($relative in @('map\m10\GI_EnvM_m10.tpfbhd', 'map\m10\GI_EnvM_m10.tpfbdt', 'map\m14\GI_EnvM_m14.tpfbhd', 'map\m14\GI_EnvM_m14.tpfbdt', 'map\m14\m14_9999.tpf.dcx', 'map\m12\m12_9999.tpf.dcx', 'map\m12_00_00_00\m9000B0A12.flver.dcx',
+foreach ($relative in @('map\m10\GI_EnvM_m10.tpfbhd', 'map\m10\GI_EnvM_m10.tpfbdt', 'map\m14\GI_EnvM_m14.tpfbhd', 'map\m14\GI_EnvM_m14.tpfbdt', 'map\m14\m14_9999.tpf.dcx', 'map\m10\m10_9999.tpf.dcx', 'map\m12\m12_9999.tpf.dcx', 'map\m12_00_00_00\m9000B0A12.flver.dcx',
     'map\MapStudio\m12_00_00_01.msb', 'param\DrawParam\a10_DrawParam.parambnd.dcx', 'param\DrawParam\a14_DrawParam.parambnd.dcx',
     'map\m14_01_00_00\m14_01_00_00.mcp', 'map\m14_01_00_00\m14_01_00_00.mcg', 'map\m14_01_00_00\m14_01_00_00.nvmbnd.dcx',
     'map\m14_01_00_00\m0100B1A14.flver.dcx')) {
