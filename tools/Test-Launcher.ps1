@@ -90,12 +90,16 @@ try {
     $buttonMethod = $form.GetType().GetMethod('UpdateButton', $flags)
     [void]$buttonMethod.Invoke($form, @())
     Assert ($updateButton.Enabled) 'Newer complete release did not enable Update.'
+    Assert ($updateButton.BackColor -eq [LauncherTheme]::Accent -and $updateButton.ForeColor -eq [LauncherTheme]::AccentInk) 'Available update does not use the Play accent.'
     $remote.Version = '0.7'; [void]$buttonMethod.Invoke($form, @())
     Assert (-not $updateButton.Enabled) 'Same version enabled Update.'
+    Assert ($updateButton.BackColor -eq [LauncherTheme]::Surface -and $updateButton.ForeColor -eq [LauncherTheme]::Ink) 'Update highlight did not clear when already current.'
     $remote.Version = '0.6'; [void]$buttonMethod.Invoke($form, @())
     Assert (-not $updateButton.Enabled) 'Older version enabled Update.'
+    Assert ($updateButton.BackColor -eq [LauncherTheme]::Surface) 'Older release highlighted Update.'
     $remote.Version = '0.8'; $remote.Files.Clear(); [void]$buttonMethod.Invoke($form, @())
     Assert (-not $updateButton.Enabled) 'Incomplete published release enabled Update.'
+    Assert ($updateButton.BackColor -eq [LauncherTheme]::Surface) 'Incomplete release highlighted Update.'
     $panel = $form.Controls[0]
     $coop = $form.GetType().GetField('seamless', [Reflection.BindingFlags]'Instance,NonPublic').GetValue($form)
     Assert (-not $coop.Enabled -and -not $coop.Checked) 'Missing co-op package was enabled.'

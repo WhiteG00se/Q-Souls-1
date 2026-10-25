@@ -598,6 +598,8 @@ public sealed class LauncherWindow : Form
     void UpdateButton() {
         bool available = false;
         try { available = RepositoryUpdates.Distributable(newest) && RepositoryUpdates.Newer(RepositoryUpdates.InstalledVersion(repository), newest.Version); } catch { }
+        update.BackColor = available ? LauncherTheme.Accent : LauncherTheme.Surface;
+        update.ForeColor = available ? LauncherTheme.AccentInk : LauncherTheme.Ink;
         update.Enabled = !worker.IsBusy && !SettingsSaving() && !saveFailed && available;
     }
     string SaveMode() { return co2.Checked ? "co2" : custom.Checked ? "custom" : "sl2"; }
