@@ -64,6 +64,12 @@ try {
     }
     else { Write-Host 'Mode: Q-Souls-1' }
     . (Join-Path $PSScriptRoot 'Read-SavedAudioLevels.ps1')
+    $controllerHelper = $false
+    $helperSettingsPath = Join-Path $repository '.local\launcher.xml'
+    if (Test-Path -LiteralPath $helperSettingsPath -PathType Leaf) {
+        [xml]$helperSettings = Get-Content -LiteralPath $helperSettingsPath -Raw
+        $controllerHelper = $helperSettings.LauncherSettings.ControllerHelper -eq 'true'
+    }
     if (-not $SaveExtension) {
         $SaveExtension = 'sl2'
         $settingsPath = Join-Path $repository '.local\launcher.xml'
@@ -119,7 +125,9 @@ try {
     $previousSeamless = $env:QSOULS_SEAMLESS
     $previousExtension = $env:QSOULS_SAVE_EXTENSION
     $previousSaveRoot = $env:QSOULS_SAVE_ROOT
+    $previousControllerHelper = $env:QSOULS_CONTROLLER_HELPER
     try {
+        $env:QSOULS_CONTROLLER_HELPER = if ($controllerHelper) { '1' } else { '0' }
         $env:SteamAppId = '570940'
         $env:SteamGameId = '570940'
         $env:QSOULS_SAVED_AUDIO = $savedAudio -join ','
@@ -136,6 +144,7 @@ try {
         $env:QSOULS_SEAMLESS = $previousSeamless
         $env:QSOULS_SAVE_EXTENSION = $previousExtension
         $env:QSOULS_SAVE_ROOT = $previousSaveRoot
+        $env:QSOULS_CONTROLLER_HELPER = $previousControllerHelper
     }
     exit 0
 }

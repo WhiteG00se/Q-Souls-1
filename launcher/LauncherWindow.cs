@@ -9,7 +9,7 @@ using System.Xml.Serialization;
 
 [assembly: System.Runtime.Versioning.TargetFramework(".NETFramework,Version=v4.8", FrameworkDisplayName = ".NET Framework 4.8")]
 
-public class LauncherSettings { public bool Seamless = true; public string SaveMode = "sl2"; public string CustomSaveExtension = ""; }
+public class LauncherSettings { public bool ControllerHelper = false; public bool Seamless = true; public string SaveMode = "sl2"; public string CustomSaveExtension = ""; }
 
 public static class LauncherFiles
 {
@@ -157,7 +157,7 @@ public sealed class VersionLabel : Label
 public sealed class LauncherWindow : Form
 {
     readonly string repository, settingsPath, iniPath;
-    readonly CheckBox seamless = new CheckBox();
+    readonly CheckBox seamless = new CheckBox(), controllerHelper = new CheckBox();
     readonly TextBox password = new TextBox();
     readonly RadioButton sl2 = new RadioButton(), co2 = new RadioButton(), custom = new RadioButton();
     readonly TextBox customExtension = new TextBox();
@@ -173,7 +173,7 @@ public sealed class LauncherWindow : Form
     readonly BackgroundWorker worker = new BackgroundWorker(), versionWorker = new BackgroundWorker();
     readonly BackgroundWorker saveWorker = new BackgroundWorker();
     readonly System.Windows.Forms.Timer saveTimer = new System.Windows.Forms.Timer { Interval = 250 };
-    sealed class SettingsChange { public bool Seamless; public string Password; public string SaveMode; public string CustomExtension; public int Revision; }
+    sealed class SettingsChange { public bool Seamless; public bool ControllerHelper; public string Password; public string SaveMode; public string CustomExtension; public int Revision; }
     SettingsChange saving;
     int saveRevision, savedRevision;
     bool saveFailed, closeAfterSave, showInstallSuccess;
@@ -260,6 +260,8 @@ public sealed class LauncherWindow : Form
         password.Width = 230; password.UseSystemPasswordChar = false; passwordRow.Controls.Add(password);
         password.KeyDown += PasswordKeyDown;
         coopGroup.Controls.Add(passwordRow);
+        controllerHelper.Text = "Controller detection helper"; controllerHelper.AutoSize = true;
+        saveGroup.Controls.Add(controllerHelper);
         var saveModes = new FlowLayoutPanel { AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, Dock = DockStyle.Fill };
         saveModes.Controls.Add(new Label { Text = "Savegame:", AutoSize = true, Margin = new Padding(0, 7, 12, 0) });
         sl2.Text = ".sl2"; co2.Text = ".co2"; custom.Text = "custom";
@@ -330,6 +332,7 @@ public sealed class LauncherWindow : Form
         RefreshInstallation();
         var settings = new LauncherSettings();
         if (File.Exists(settingsPath)) using (var reader = File.OpenRead(settingsPath)) settings = (LauncherSettings)new XmlSerializer(typeof(LauncherSettings)).Deserialize(reader);
+        controllerHelper.Checked = settings.ControllerHelper;
         seamless.Checked = settings.Seamless && Installed();
         customExtension.Text = settings.CustomSaveExtension ?? "";
         if (settings.SaveMode == "co2") co2.Checked = true;
@@ -338,10 +341,11 @@ public sealed class LauncherWindow : Form
         saveTimer.Tick += delegate { saveTimer.Stop(); StartSaving(); };
         saveWorker.DoWork += delegate(object sender, DoWorkEventArgs e) {
             var change = (SettingsChange)e.Argument;
-            PersistSettings(change.Seamless, change.Password, change.SaveMode, change.CustomExtension);
+            PersistSettings(change.Seamless, change.Password, change.SaveMode, change.CustomExtension, change.ControllerHelper);
         };
         saveWorker.RunWorkerCompleted += SaveCompleted;
         seamless.CheckedChanged += delegate { QueueSave(); };
+        controllerHelper.CheckedChanged += delegate { QueueSave(); };
         password.TextChanged += delegate { QueueSave(); };
         foreach (var mode in new[] { sl2, co2, custom }) mode.CheckedChanged += delegate(object sender, EventArgs e) { if (((RadioButton)sender).Checked) { UpdateSaveInfo(); QueueSave(); } };
         customExtension.TextChanged += delegate { UpdateSaveInfo(); QueueSave(); };
@@ -546,7 +550,7 @@ public sealed class LauncherWindow : Form
         customExtensionGroup.Visible = custom.Checked;
         string extension = SaveExtension();
         string remark = extension.Equals("sl2", StringComparison.OrdinalIgnoreCase) ? Sl2Remark : extension.Equals("co2", StringComparison.OrdinalIgnoreCase) ? Co2Remark : CustomRemark;
-        saveInfo.Text = "Save: DRAKS0005." + extension + Environment.NewLine + remark;
+        saveInfo.Text = remark;
         RequestFit();
     }
     bool SettingsSaving() { return saveWorker.IsBusy || saveTimer.Enabled || (!saveFailed && savedRevision != saveRevision); }
@@ -559,7 +563,7 @@ public sealed class LauncherWindow : Form
     }
     void StartSaving() {
         if (saveWorker.IsBusy || IsDisposed) return;
-        saving = new SettingsChange { Seamless = seamless.Checked, Password = password.Text, SaveMode = SaveMode(), CustomExtension = customExtension.Text, Revision = saveRevision };
+        saving = new SettingsChange { ControllerHelper = controllerHelper.Checked, Seamless = seamless.Checked, Password = password.Text, SaveMode = SaveMode(), CustomExtension = customExtension.Text, Revision = saveRevision };
         try { saveWorker.RunWorkerAsync(saving); }
         catch (Exception ex) { saveFailed = true; closeAfterSave = false; ShowSaveError(ex); }
         UpdatePlayButton(); UpdateButton();
@@ -616,7 +620,7 @@ public sealed class LauncherWindow : Form
         }
         UpdatePlayButton(); UpdateButton();
     }
-    void PersistSettings(bool enabled, string selectedPassword, string mode, string customValue) {
+    void PersistSettings(bool enabled, string selectedPassword, string mode, string customValue, bool helper) {
         string extension = mode == "custom" ? customValue : mode;
         if (!Regex.IsMatch(extension ?? "", "^[a-zA-Z0-9]{1,120}$")) throw new InvalidOperationException("Enter a save extension using 1 to 120 letters or numbers after the dot.");
         if (enabled && String.IsNullOrWhiteSpace(selectedPassword)) throw new InvalidOperationException(PasswordPrompt);
@@ -627,7 +631,7 @@ public sealed class LauncherWindow : Form
         }
         var serializer = new XmlSerializer(typeof(LauncherSettings));
         using (var writer = new StringWriter()) {
-            serializer.Serialize(writer, new LauncherSettings { Seamless = enabled, SaveMode = mode, CustomSaveExtension = customValue });
+            serializer.Serialize(writer, new LauncherSettings { ControllerHelper = helper, Seamless = enabled, SaveMode = mode, CustomSaveExtension = customValue });
             LauncherFiles.Write(settingsPath, writer.ToString().Replace("encoding=\"utf-16\"", "encoding=\"utf-8\""));
         }
     }
@@ -640,6 +644,7 @@ public sealed class LauncherWindow : Form
         check.Enabled = downloadCoop.Enabled = !busy;
         UpdatePlayButton();
         seamless.Enabled = !busy && Installed(); password.Enabled = !busy && seamless.Checked;
+        controllerHelper.Enabled = !busy;
         sl2.Enabled = co2.Enabled = custom.Enabled = customExtension.Enabled = !busy;
         UseWaitCursor = busy; UpdateButton();
     }

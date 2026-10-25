@@ -54,7 +54,10 @@ if ($LASTEXITCODE -ne 0) { throw 'Overlay tests failed.' }
 & $Compiler @common -c (Join-Path $PSScriptRoot 'Test-TitleMusic.c') -o (Join-Path $temporary 'Test-TitleMusic.o')
 if ($LASTEXITCODE -ne 0) { throw 'Music test compilation failed.' }
 & $cppCompiler @common @cpp (Join-Path $temporary 'Test-TitleMusic.o') `
-    (Join-Path $repository 'runtime\TitleOverlay.cpp') -lgdi32 -ldxguid -municode -o (Join-Path $temporary 'Test-TitleMusic.exe')
+    (Join-Path $repository 'runtime\TitleOverlay.cpp') (Join-Path $repository 'runtime\ControllerHelper.cpp') -lgdi32 -ldxguid -municode -o (Join-Path $temporary 'Test-TitleMusic.exe')
 if ($LASTEXITCODE -ne 0) { throw 'Music test link failed.' }
 & (Join-Path $temporary 'Test-TitleMusic.exe') $game (Join-Path $repository 'assets\audio\title-theme.wav') (Join-Path $temporary 'music.log')
 if ($LASTEXITCODE -ne 0) { throw 'Music tests failed.' }
+
+& (Join-Path $PSScriptRoot 'Test-ControllerHelper.ps1') -Compiler $cppCompiler
+& (Join-Path $PSScriptRoot 'Test-ControllerLaunch.ps1')

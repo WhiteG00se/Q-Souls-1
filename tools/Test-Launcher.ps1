@@ -43,6 +43,9 @@ $settingsPath = Join-Path $temporary '.local\launcher.xml'
 [LauncherFiles]::Write($settingsPath, '<LauncherSettings><Seamless>false</Seamless></LauncherSettings>')
 [LauncherFiles]::Write($settingsPath, '<LauncherSettings><Seamless>true</Seamless></LauncherSettings>')
 $serializer = New-Object Xml.Serialization.XmlSerializer([LauncherSettings])
+Assert (-not ([LauncherSettings]::new()).ControllerHelper) 'Controller helper must default off.'
+$legacy = [IO.StringReader]::new('<LauncherSettings><Seamless>false</Seamless></LauncherSettings>')
+try { Assert (-not $serializer.Deserialize($legacy).ControllerHelper) 'Legacy settings enabled controller helper.' } finally { $legacy.Dispose() }
 $stream = [IO.File]::OpenRead($settingsPath)
 try { Assert ($serializer.Deserialize($stream).Seamless) 'Settings overwrite failed.' } finally { $stream.Dispose() }
 # Construct controls without showing the launcher or executing the backend/game.
@@ -110,9 +113,9 @@ try {
     $coop = $form.GetType().GetField('seamless', [Reflection.BindingFlags]'Instance,NonPublic').GetValue($form)
     Assert ($coop.Enabled -and $coop.Checked) 'Installed co-op or persisted selection missing.'
     $saveLabel = $form.GetType().GetField('saveInfo', [Reflection.BindingFlags]'Instance,NonPublic').GetValue($form)
-    Assert ($saveLabel.Text.Contains('DRAKS0005.sl2') -and $saveLabel.Text.Contains('Vanilla, works with Steam cloud sync.')) 'Cloud status incorrect.'
+    Assert (-not $saveLabel.Text.Contains('DRAKS0005.') -and $saveLabel.Text.Contains('Vanilla, works with Steam cloud sync.')) 'Cloud status incorrect.'
     $coop.Checked = $false
-    Assert ($saveLabel.Text.Contains('DRAKS0005.sl2')) 'Changing mode did not update save information.'
+    Assert (-not $saveLabel.Text.Contains('DRAKS0005.')) 'Changing mode did not update save information.'
     Wait-Settings $form
     $stream = [IO.File]::OpenRead($settingsPath)
     try { Assert (-not $serializer.Deserialize($stream).Seamless) 'Disabled co-op did not persist.' } finally { $stream.Dispose() }

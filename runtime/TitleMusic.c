@@ -7,6 +7,7 @@
 #include <wctype.h>
 #include <ctype.h>
 #include "TitleOverlay.h"
+#include "ControllerHelper.h"
 #include "IntroSkip.h"
 
 static HMODULE self;
@@ -626,6 +627,7 @@ __declspec(dllexport) DWORD WINAPI InitializeQSouls(void *unused)
     if (assetError) return assetError;
     DWORD saveError = initializeSaveExtension();
     if (saveError) return saveError;
+    initializeControllerHelper(root);
     readStartupAudio();
     cameraGlobal = findCameraGlobal();
     optionsGlobal = findOptionsGlobal();

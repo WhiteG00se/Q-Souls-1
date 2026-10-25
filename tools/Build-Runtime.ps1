@@ -10,6 +10,6 @@ $cppCompiler = Join-Path (Split-Path -Parent $Compiler) 'clang++.exe'
     -o (Join-Path $temporary 'TitleMusic.o')
 if ($LASTEXITCODE -ne 0) { throw 'Runtime compilation failed.' }
 & $cppCompiler --target=x86_64-w64-mingw32 -std=c++17 -shared -static -fno-exceptions -fno-rtti -O2 -Wall -Wextra -Werror `
-    (Join-Path $temporary 'TitleMusic.o') (Join-Path $repository 'runtime\TitleOverlay.cpp') `
+    (Join-Path $temporary 'TitleMusic.o') (Join-Path $repository 'runtime\TitleOverlay.cpp') (Join-Path $repository 'runtime\ControllerHelper.cpp') `
     -lgdi32 -ldxguid '-Wl,--no-insert-timestamp' -o (Join-Path $repository 'runtime\QSoulsRuntime.dll')
 if ($LASTEXITCODE -ne 0) { throw 'Runtime build failed.' }

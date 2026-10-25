@@ -26,11 +26,18 @@ function Extension { return [LauncherFiles]::ReadValue([IO.File]::ReadAllText($i
 $form = New-Object LauncherWindow($temporary, $false)
 try {
     Show-Fixture $form; Wait-Save $form
+    $helper = Field $form 'controllerHelper'
+    Assert (-not $helper.Checked -and $helper.Text -eq 'Controller detection helper') 'Helper default or label differs.'
+    Assert ($helper.Parent.GetRow($helper) -eq 0) 'Helper is not above Savegame.'
+    $helper.Checked = $true; $helper.Checked = $false; $helper.Checked = $true
+    Wait-Save $form
+    [xml]$saved = Get-Content (Join-Path $temporary '.local\launcher.xml') -Raw
+    Assert ($saved.LauncherSettings.ControllerHelper -eq 'true') 'Latest helper edit was not saved.'
     $sl2 = Field $form 'sl2'; $co2 = Field $form 'co2'; $custom = Field $form 'custom'
     $input = Field $form 'customExtension'; $row = Field $form 'customExtensionRow'; $group = Field $form 'customExtensionGroup'; $info = Field $form 'saveInfo'; $coop = Field $form 'seamless'
     Assert ($sl2.Checked -and (Extension) -eq 'sl2') 'Default did not stay sl2 despite the co-op package default.'
     Assert (-not $group.Visible) 'Custom input is visible for sl2.'
-    Assert ($info.Text -ceq "Save: DRAKS0005.sl2`r`nVanilla, works with Steam cloud sync.`r`nOnly load modded saves in the modded game and vice versa.") 'sl2 remark differs.'
+    Assert ($info.Text -ceq "Vanilla, works with Steam cloud sync.`r`nOnly load modded saves in the modded game and vice versa.") 'sl2 remark differs.'
     $coop.Checked = $false; Wait-Save $form
     Assert ($sl2.Checked -and (Extension) -eq 'sl2') 'Disabling co-op changed the save extension.'
     $coop.Checked = $true; Wait-Save $form
@@ -54,10 +61,12 @@ try {
 $form = New-Object LauncherWindow($temporary, $false)
 try {
     Show-Fixture $form; Wait-Save $form
+    Assert ((Field $form 'controllerHelper').Checked) 'Helper choice lost after reopening.'
     Assert ((Field $form 'custom').Checked -and (Field $form 'customExtension').Text -eq 'mySave9') 'Custom choice lost after reopening.'
     Assert (-not (Field $form 'seamless').Checked) 'Co-op choice was altered by save mode.'
     (Field $form 'seamless').Checked = $true; Wait-Save $form
     Assert ((Field $form 'custom').Checked -and (Extension) -eq 'mySave9') 'Enabling co-op changed custom extension.'
+    (Field $form 'controllerHelper').Checked = $false
     (Field $form 'sl2').Checked = $true; Wait-Save $form
     Assert ((Extension) -eq 'sl2' -and -not (Field $form 'customExtensionGroup').Visible) 'Returning to sl2 failed.'
 } finally { $form.Dispose() }
