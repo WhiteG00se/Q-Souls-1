@@ -605,6 +605,7 @@ static BOOL replaceImport(void **slot, void *replacement)
 #include "ParamOverride.h"
 #include "SaveExtension.h"
 #include "RespecRuntime.h"
+#include "QualityInput.h"
 
 // Explicit initialization lets the launcher report a failure before starting the game.
 __declspec(dllexport) DWORD WINAPI InitializeQSouls(void *unused)

@@ -19,6 +19,11 @@ if ($LASTEXITCODE -ne 0) { throw 'Quality test build failed.' }
 & (Join-Path $temporary 'Test-Quality.exe') (Join-Path $game 'DarkSoulsRemastered.exe') (Join-Path $temporary ('quality-' + [Guid]::NewGuid().ToString('N')))
 if ($LASTEXITCODE -ne 0) { throw 'Quality tests failed.' }
 
+& $Compiler @common (Join-Path $PSScriptRoot 'Test-QualityInput.c') -o (Join-Path $temporary 'Test-QualityInput.exe')
+if ($LASTEXITCODE -ne 0) { throw 'Quality input test build failed.' }
+& (Join-Path $temporary 'Test-QualityInput.exe')
+if ($LASTEXITCODE -ne 0) { throw 'Quality input tests failed.' }
+
 & $cppCompiler @common @cpp (Join-Path $PSScriptRoot 'Test-GamePresentation.cpp') -municode -o (Join-Path $temporary 'Test-GamePresentation.exe')
 if ($LASTEXITCODE -ne 0) { throw 'Game presentation test build failed.' }
 & (Join-Path $temporary 'Test-GamePresentation.exe') (Join-Path $game 'DarkSoulsRemastered.exe')

@@ -14,26 +14,49 @@
 #include "../third_party/ds1-fps-unlock/src/common/log.h"
 
 namespace {
-BYTE *gameImage;
-void *(*findWidget)(void *, const wchar_t *);
-void (*registerButton)(void *, void *, int);
-unsigned char (*menuQuery)(void *, int);
-int (*getRegister)(int);
+constexpr int requestFlag=70000980, doneFlag=70000981, readyFlag=70000983;
+NativeCalls openingHook;
+uintptr_t flagsGlobal, worldGlobal;
 void (*setRegister)(int, int);
-void (*originalMessage)(void *, int, void *);
-void (*originalEvent)(void *, int, int);
-void (*originalInput)(void *);
-void (*originalConfirm)(void *);
-void (*originalInit)(void *);
-void (*originalCursor)(void *);
-void (*playSound)(int);
-bool mouseDown;
-NativeCalls hooks[3];
-std::atomic<int> page{0}, fpsStatus{0}, saveFailed{0};
-std::atomic<ULONGLONG> menuTick{0};
+std::atomic<int> fpsStatus{0};
+std::atomic<bool> capturing{false};
+SRWLOCK panelLock=SRWLOCK_INIT;
+bool editing=false, saveFailed=false, renderOK=false;
+HWND panelWindow;
+ULONGLONG lastFrame=0, captureUntil=0;
+uintptr_t lastFlags=0, lastCharacter=0;
 wchar_t settingsPath[MAX_PATH], fpsLogPath[MAX_PATH];
 void (*report)(const char *);
-
+void selectOpeningCategory(int index, int value)
+{
+    setRegister(index,index==0x4b && value==0 ? 1 : value);
+}
+bool readMemory(uintptr_t address,void *out,size_t size)
+{
+    SIZE_T count=0;
+    return address && ReadProcessMemory(GetCurrentProcess(),(void *)address,out,size,&count) && count==size;
+}
+uintptr_t pointer(uintptr_t address)
+{
+    uintptr_t result=0; readMemory(address,&result,sizeof(result)); return result;
+}
+volatile LONG *flagWord()
+{
+    uintptr_t address=pointer(pointer(flagsGlobal));
+    if (!address) return nullptr;
+    address+=0x11378; MEMORY_BASIC_INFORMATION info;
+    if (!VirtualQuery((void *)address,&info,sizeof(info)) || info.State!=MEM_COMMIT ||
+        (info.Protect&(PAGE_GUARD|PAGE_NOACCESS)) ||
+        !(info.Protect&(PAGE_READWRITE|PAGE_WRITECOPY|PAGE_EXECUTE_READWRITE|PAGE_EXECUTE_WRITECOPY)) ||
+        address<(uintptr_t)info.BaseAddress || sizeof(LONG)>info.RegionSize-(address-(uintptr_t)info.BaseAddress)) return nullptr;
+    return (volatile LONG *)address;
+}
+LONG mask(int flag) { return (LONG)(0x80000000u>>(flag%32)); }
+bool flag(volatile LONG *word,int id) { return (InterlockedCompareExchange(word,0,0)&mask(id))!=0; }
+void setFlag(volatile LONG *word,int id,bool value)
+{
+    if (value) InterlockedOr(word,mask(id)); else InterlockedAnd(word,~mask(id));
+}
 bool writableFilePath(const wchar_t *path)
 {
     wchar_t part[MAX_PATH];
@@ -56,102 +79,60 @@ bool saveLimit(unsigned fps)
 }
 void moveLimit(int direction)
 {
-    if (fpsStatus.load() != 1) return;
-    unsigned fps = qualityNextFps(g_target_fps.load(), direction);
-    // Save first: a failed save leaves both the displayed and active limit unchanged.
-    if (!saveLimit(fps)) { saveFailed.store(1); return; }
-    saveFailed.store(0);
-    g_target_fps.store(fps);
-    playSound(0);
+    if (fpsStatus.load()!=1) return;
+    unsigned current=g_target_fps.load(), next=qualityNextFps(current,direction);
+    if (next==current) return;
+    if (!saveLimit(next)) { saveFailed=true; return; }
+    saveFailed=false; g_target_fps.store(next);
 }
-void openPage(int next)
+BOOL qualityText(char *text,size_t capacity)
 {
-    page.store(next); saveFailed.store(0); menuTick.store(GetTickCount64());
-    mouseDown = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0; playSound(100);
-}
-void confirm(void *menu)
-{
-    if (page.load()) return;
-    if (getRegister(0x4b) == 4) openPage(1);
-    else originalConfirm(menu);
-}
-void mouseInput()
-{
-    HWND window = GetForegroundWindow(); DWORD pid = 0;
-    GetWindowThreadProcessId(window, &pid);
-    bool down = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
-    bool clicked = down && !mouseDown; mouseDown = down;
-    if (!clicked || pid != GetCurrentProcessId()) return;
-    RECT rect; POINT point;
-    if (!GetClientRect(window, &rect) || !GetCursorPos(&point) || !ScreenToClient(window, &point)) return;
-    float scale = (float)rect.bottom / 1080.0f;
-    if ((float)rect.right / 1920.0f < scale) scale = (float)rect.right / 1920.0f;
-    int font = (int)(26 * scale + 0.5f); if (font < 8) font = 8;
-    int left = (rect.right - font * 32) / 2, top = (rect.bottom - font * 13) / 2;
-    if (point.x >= left + font && point.x < left + font * 31 &&
-        point.y >= top + font * 3 && point.y < top + font * 5) {
-        if (page.load() == 1) openPage(2);
-        else moveLimit(1);
+    AcquireSRWLockShared(&panelLock);
+    bool show=editing;
+    if (show) {
+        const char *status=saveFailed ? "Could not save. FPS cap unchanged." :
+            fpsStatus.load()<0 ? "FPS module failed. See .local/fps.log." :
+            fpsStatus.load()==0 ? "FPS module is starting..." : "";
+        snprintf(text,capacity,"Q Souls\n\nFPS Cap < %u >%s%s",g_target_fps.load(),*status ? "\n\n" : "",status);
     }
+    ReleaseSRWLockShared(&panelLock); return show;
 }
-void input(void *menu)
+void presented(HWND window,BOOL success)
 {
-    menuTick.store(GetTickCount64());
-    int current = page.load();
-    if (!current) { originalInput(menu); return; }
-    // The Start bar uses its own mapped confirm action. The child pages also
-    // accept the standard menu confirm, retaining native keyboard/controller bindings.
-    bool back = menuQuery(menu, 0x97) || menuQuery(menu, 0xb5);
-    bool left = menuQuery(menu, 0x89) != 0;
-    bool right = menuQuery(menu, 0x88) != 0;
-    bool accept = menuQuery(menu, 0xb4) || menuQuery(menu, 0x96);
-    if (back) { page.store(current - 1); playSound(200); }
-    else if (current == 1 && accept) openPage(2);
-    else if (current == 2 && left) moveLimit(-1);
-    else if (current == 2 && (right || accept)) moveLimit(1);
-    else mouseInput();
+    AcquireSRWLockExclusive(&panelLock);
+    panelWindow=window; lastFrame=GetTickCount64(); renderOK=success;
+    ReleaseSRWLockExclusive(&panelLock);
 }
-void event(void *menu, int kind, int id)
+void endPanel(ULONGLONG now) { editing=false; saveFailed=false; captureUntil=now+150; }
+// This runs on the game's window thread; rendering reads a locked snapshot only.
+void tickPanel(ULONGLONG now,volatile LONG *word,uintptr_t character,bool alive,bool rendering,bool focused,unsigned buttons)
 {
-    if (page.load()) {
-        // Block mouse activation of the covered category bar; right-click goes back.
-        if (kind == 6) { page.fetch_sub(1); playSound(200); }
-        return;
+    static unsigned previousButtons=0;
+    static ULONGLONG repeatAt=0;
+    if (word && ((uintptr_t)word!=lastFlags || character!=lastCharacter)) {
+        setFlag(word,requestFlag,false); setFlag(word,doneFlag,false);
+        lastFlags=(uintptr_t)word; lastCharacter=character;
+        if (editing) endPanel(now);
     }
-    // ID 4 already belongs to the native background listener. Give Q its own ID.
-    if (id == 100 && (kind == 2 || kind == 8) && getRegister(8) == 8) {
-        int previous = getRegister(0x4b); setRegister(0x4b, 4); originalCursor(menu);
-        if (kind == 2) openPage(1);
-        else if (previous != 4) playSound(0);
-        return;
+    if (word) setFlag(word,readyFlag,alive && rendering);
+    bool request=word && flag(word,requestFlag);
+    if (editing && (!request || !alive || !word || (!rendering && focused))) {
+        endPanel(now); if (request) setFlag(word,doneFlag,true);
     }
-    originalEvent(menu, kind, id);
-}
-void message(void *menu, int id, void *value)
-{
-    if (id == 1001) page.store(0);
-    originalMessage(menu, id, value);
-}
-void initializeBar(void *menu)
-{
-    page.store(0); originalInit(menu);
-    void *button = findWidget(menu, L"cursor0_4");
-    if (button) registerButton(menu, button, 100);
-}
-BOOL overlayText(char *text, size_t capacity)
-{
-    int current = page.load();
-    if (!current || GetTickCount64() - menuTick.load() > 250) return FALSE;
-    if (current == 1) {
-        snprintf(text, capacity, "Q Souls\n\n> Quality settings\n\nConfirm / Click: open\nBack: return to Start menu");
-        return TRUE;
+    if (!editing && request && !flag(word,doneFlag) && alive && rendering) {
+        editing=true; saveFailed=false; previousButtons=buttons; repeatAt=now+350;
     }
-    const char *status = fpsStatus.load() == 1 ? "Saved automatically. Disable VSync in PC settings for high FPS." :
-        fpsStatus.load() < 0 ? "FPS module failed. See .local/fps.log." : "FPS module is starting...";
-    if (saveFailed.load()) status = "Could not save. FPS limit was not changed.";
-    snprintf(text, capacity, "Quality settings\n\nFPS limit:  < %u FPS >\n\n"
-        "Left / Right: change    Confirm / Click FPS: next\nBack: return to Q Souls\n\n%s", g_target_fps.load(), status);
-    return TRUE;
+    if (editing && focused) {
+        unsigned pressed=buttons&~previousButtons;
+        if ((buttons&12) && now>=repeatAt) { pressed|=buttons&12; repeatAt=now+100; }
+        if (buttons!=previousButtons) repeatAt=now+350;
+        if ((pressed&12)==4) moveLimit(-1);
+        if ((pressed&12)==8) moveLimit(1);
+        if (pressed&16) { setFlag(word,doneFlag,true); endPanel(now); }
+        previousButtons=buttons;
+    }
+    capturing.store(editing || now<captureUntil);
+    g_external_menu_active.store(capturing.load());
 }
 bool supportedImage(BYTE *image)
 {
@@ -164,69 +145,54 @@ bool supportedImage(BYTE *image)
 }
 DWORD resolveMenu(BYTE *image)
 {
-    if (!supportedImage(image)) return ERROR_REVISION_MISMATCH;
-    struct Site { unsigned rva; const char *bytes; size_t length; };
-    const Site sites[] = {
-        {0x66ec20, "\x4c\x89\x44\x24\x18\x57", 6},
-        {0x66ece0, "\x48\x89\x5c\x24\x10\x57", 6},
-        {0x66f4a0, "\x48\x89\x5c\x24\x18\x55\x56\x57", 8},
-        {0x66f6a0, "\x40\x53\x48\x83\xec\x30", 6},
-        {0x66e7f0, "\x48\x8b\xc4\x56\x57\x41\x56", 7},
-        {0xed6020, "\x48\x89\x5c\x24\x10\x57\x48\x83\xec\x20", 10},
-        // Three independent native bounds for left/right and shoulder navigation.
-        {0x66f600, "\x83\xf8\x03", 3}, {0x66f623, "\x83\xf8\x03", 3},
-        {0x66f636, "\xbb\x03\x00\x00\x00", 5}
-    };
-    for (const Site &site : sites) if (memcmp(image + site.rva, site.bytes, site.length)) return ERROR_REVISION_MISMATCH;
-    if (*(void **)(image + 0x13adf08) != image + 0x66ec20 ||
-        *(void **)(image + 0x13adf48) != image + 0x66ece0) return ERROR_REVISION_MISMATCH;
-    gameImage = image;
-    findWidget = (decltype(findWidget))(image + 0xed6020);
-    registerButton = (decltype(registerButton))(image + 0x719950);
-    menuQuery = (decltype(menuQuery))(image + 0xed6750);
-    playSound = (decltype(playSound))(image + 0x723620);
-    getRegister = (decltype(getRegister))(image + 0x71abd0);
-    setRegister = (decltype(setRegister))(image + 0x71abf0);
-    originalMessage = (decltype(originalMessage))(image + 0x66ec20);
-    originalEvent = (decltype(originalEvent))(image + 0x66ece0);
-    originalInput = (decltype(originalInput))(image + 0x66f4a0);
-    originalConfirm = (decltype(originalConfirm))(image + 0x66f6a0);
-    originalInit = (decltype(originalInit))(image + 0x66e7f0);
-    originalCursor = (decltype(originalCursor))(image + 0x66f1f0);
-    const unsigned targets[] = {0x66f4a0, 0x66f6a0, 0x66e7f0};
-    void *callbacks[] = {(void *)input, (void *)confirm, (void *)initializeBar};
-    for (unsigned i = 0; i < 3; ++i) { hooks[i].target = image + targets[i]; hooks[i].callback = callbacks[i]; }
-    return ERROR_SUCCESS;
-}
-DWORD extendBar(BYTE *image)
-{
-    const unsigned offsets[] = {0x66f602, 0x66f625, 0x66f637};
-    for (unsigned offset : offsets) {
-        if (image[offset] != 3) return ERROR_REVISION_MISMATCH;
+    if (!supportedImage(image) || memcmp(image+0x66f070,"\x33\xd2\x8d\x4a\x4b",5) ||
+        memcmp(image+0x66f07a,"\x66\xc7\x83\x48\x02\x00\x00\x01\x01",9)) return ERROR_REVISION_MISMATCH;
+    // The same event-flag manager reference used by the original Respec bridge.
+    const BYTE pattern[]={0x48,0x8b,0x0d,0,0,0,0,0x99,0x33,0xc2,0x45,0x33,0xc0,0x2b,0xc2,0x8d,0x50,0xf6};
+    auto *nt=(IMAGE_NT_HEADERS64 *)(image+((IMAGE_DOS_HEADER *)image)->e_lfanew);
+    auto *section=IMAGE_FIRST_SECTION(nt); BYTE *found=nullptr;
+    for (unsigned n=0;n<nt->FileHeader.NumberOfSections;++n,++section) {
+        if (!(section->Characteristics&IMAGE_SCN_MEM_EXECUTE) || section->Misc.VirtualSize<sizeof(pattern)) continue;
+        BYTE *start=image+section->VirtualAddress;
+        for (size_t i=0;i<=section->Misc.VirtualSize-sizeof(pattern);++i) {
+            if (memcmp(start+i,pattern,3) || memcmp(start+i+7,pattern+7,sizeof(pattern)-7)) continue;
+            if (found) return ERROR_REVISION_MISMATCH;
+            found=start+i;
+        }
     }
-    for (unsigned offset : offsets) {
-        DWORD previous, ignored;
-        if (!VirtualProtect(image + offset, 1, PAGE_EXECUTE_READWRITE, &previous)) return GetLastError();
-        image[offset] = 4;
-        DWORD error = FlushInstructionCache(GetCurrentProcess(), image + offset, 1) ? ERROR_SUCCESS : GetLastError();
-        if (!VirtualProtect(image + offset, 1, previous, &ignored) && !error) error = GetLastError();
-        if (error) return error;
-    }
-    return ERROR_SUCCESS;
+    if (!found) return ERROR_REVISION_MISMATCH;
+    int32_t offset; memcpy(&offset,found+3,4); flagsGlobal=(uintptr_t)(found+7+offset);
+    worldGlobal=(uintptr_t)(image+0x1c77e50);
+    setRegister=(decltype(setRegister))(image+0x71abf0);
+    openingHook.target=(BYTE *)setRegister; openingHook.callback=(void *)selectOpeningCategory;
+    openingHook.sites[0]=image+0x66f075; openingHook.count=1;
+    return nativePrepareSites(&openingHook);
 }
 DWORD WINAPI startFps(void *)
 {
     bool ok = patches_apply();
     fpsStatus.store(ok ? 1 : -1);
     if (ok) bonfire_start();
-    if (report) report(ok ? "FPS module ready; Quality settings controls the live frame limit." : "FPS module failed; see .local/fps.log.");
+    if (report) report(ok ? "FPS module ready; Q Souls controls the live frame limit." : "FPS module failed; see .local/fps.log.");
     return 0;
 }
 }
-extern "C" DWORD initializeQualitySettings(const wchar_t *root, void (*log)(const char *))
+extern "C" BOOL qualityCapture(void) { return capturing.load(); }
+extern "C" void qualityTick(void)
 {
-    DWORD error = resolveMenu((BYTE *)GetModuleHandleW(nullptr));
-    if (error) return error;
+    AcquireSRWLockExclusive(&panelLock);
+    if (!panelWindow || GetWindowThreadProcessId(panelWindow,nullptr)!=GetCurrentThreadId()) {
+        ReleaseSRWLockExclusive(&panelLock); return;
+    }
+    ULONGLONG now=GetTickCount64();
+    uintptr_t character=pointer(pointer(worldGlobal)+0x68); int hp=0;
+    bool alive=character && readMemory(character+0x3e8,&hp,sizeof(hp)) && hp>0;
+    bool healthy=renderOK && now-lastFrame<3000 && qualityInputHealthy();
+    tickPanel(now,flagWord(),character,alive,healthy,GetForegroundWindow()==panelWindow,qualityButtons());
+    ReleaseSRWLockExclusive(&panelLock);
+}
+extern "C" DWORD initializeQualitySettings(const wchar_t *root,void (*log)(const char *))
+{
     if (swprintf(settingsPath, MAX_PATH, L"%ls\\.local\\quality.ini", root) < 0 ||
         swprintf(fpsLogPath, MAX_PATH, L"%ls\\.local\\fps.log", root) < 0) return ERROR_BUFFER_OVERFLOW;
     wchar_t previousLog[MAX_PATH];
@@ -240,29 +206,16 @@ extern "C" DWORD initializeQualitySettings(const wchar_t *root, void (*log)(cons
     g_slide_ptde.store(0); g_graze_ptde.store(0); g_step_down_ptde.store(0);
     g_step_height_ptde.store(0); g_air_damping_ptde.store(0);
     report = log; log_init(fpsLogPath, L"fps.log");
-    const unsigned counts[] = {1, 2, 1};
-    for (unsigned i = 0; i < 3; ++i) {
-        error = nativePrepareCalls(gameImage, &hooks[i], counts[i]);
-        if (error) { for (auto &hook : hooks) nativeRestoreCalls(&hook); return error; }
-    }
-    for (auto &hook : hooks) if ((error = nativeApplyCalls(&hook)) != ERROR_SUCCESS) {
-        for (auto &restore : hooks) nativeRestoreCalls(&restore);
-        return error;
-    }
-    error = extendBar(gameImage);
+    DWORD error=resolveMenu((BYTE *)GetModuleHandleW(nullptr));
     if (error) return error;
-    const unsigned slots[] = {0x13adf08, 0x13adf48};
-    void *callbacks[] = {(void *)message, (void *)event};
-    for (unsigned i = 0; i < 2; ++i) {
-        void **slot = (void **)(gameImage + slots[i]); DWORD previous, ignored;
-        if (!VirtualProtect(slot, sizeof(*slot), PAGE_READWRITE, &previous)) return GetLastError();
-        InterlockedExchangePointer(slot, callbacks[i]);
-        if (!VirtualProtect(slot, sizeof(*slot), previous, &ignored)) return GetLastError();
-    }
-    setQualityOverlay(overlayText);
-    HANDLE thread = CreateThread(nullptr, 0, startFps, nullptr, 0, nullptr);
+    error=nativeApplyCalls(&openingHook);
+    if (error) { nativeRestoreCalls(&openingHook); return error; }
+    error=initializeQualityInput();
+    if (error) { nativeRestoreCalls(&openingHook); return error; }
+    setQualityOverlay(qualityText); setQualityFrame(presented);
+    HANDLE thread=CreateThread(nullptr,0,startFps,nullptr,0,nullptr);
     if (!thread) return GetLastError();
     CloseHandle(thread);
-    log("Q category added to the native Start bar: Q Souls > Quality settings (120 FPS default).");
+    log("Q Souls uses the original Respec panel bridge; the native bonfire list is closed while editing.");
     return ERROR_SUCCESS;
 }

@@ -2,6 +2,7 @@
 
 #include "log.h"
 #include "profile.h"
+#include "state.h"
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -387,6 +388,7 @@ void clear_sits(const Sample& sample, int* fixed) {
     if (!is_sit(read_int(chosen->address))) {
         return;
     }
+    if (g_external_menu_active.load()) return;
     if (write_u32(chosen->address, 0)) {
         ++*fixed;
         LOG_INFO("Bonfire softlock: no menu open for a second while seated; told the character to stand (%d, %s+%x was %d)",
@@ -457,7 +459,7 @@ DWORD WINAPI bonfire_thread(void*) {
                      hits, menus, ids);
         }
 
-        if (!sample.hit_count || !menus_clear(sample)) {
+        if (g_external_menu_active.load() || !sample.hit_count || !menus_clear(sample)) {
             since = 0;
             continue;
         }

@@ -23,11 +23,15 @@ static inline unsigned nativeCallSites(BYTE *image, BYTE *target, BYTE **sites, 
     }
     return count;
 }
-static inline DWORD nativePrepareCalls(BYTE *image, NativeCalls *hook, unsigned expected)
+static inline DWORD nativePrepareSites(NativeCalls *hook)
 {
-    if (!hook->target || !hook->callback || !expected || expected > 8 || hook->relay) return ERROR_INVALID_PARAMETER;
-    hook->count = nativeCallSites(image, hook->target, hook->sites, 8);
-    if (hook->count != expected) return ERROR_REVISION_MISMATCH;
+    if (!hook->target || !hook->callback || !hook->count || hook->count > 8 || hook->relay) return ERROR_INVALID_PARAMETER;
+    for (unsigned i = 0; i < hook->count; ++i) {
+        BYTE *site = hook->sites[i]; int32_t displacement;
+        if (!site || site[0] != 0xe8) return ERROR_REVISION_MISMATCH;
+        memcpy(&displacement, site + 1, 4);
+        if (site + 5 + displacement != hook->target) return ERROR_REVISION_MISMATCH;
+    }
     hook->relay = (BYTE *)allocatePresentationSlot(hook->sites[0]);
     if (!hook->relay) return ERROR_NOT_ENOUGH_MEMORY;
     for (unsigned i = 0; i < hook->count; ++i) {
@@ -44,6 +48,13 @@ static inline DWORD nativePrepareCalls(BYTE *image, NativeCalls *hook, unsigned 
         DWORD error = GetLastError(); VirtualFree(hook->relay, 0, MEM_RELEASE); hook->relay = NULL; return error;
     }
     return ERROR_SUCCESS;
+}
+static inline DWORD nativePrepareCalls(BYTE *image, NativeCalls *hook, unsigned expected)
+{
+    if (!hook->target || !hook->callback || !expected || expected > 8 || hook->relay) return ERROR_INVALID_PARAMETER;
+    hook->count = nativeCallSites(image, hook->target, hook->sites, 8);
+    if (hook->count != expected) return ERROR_REVISION_MISMATCH;
+    return nativePrepareSites(hook);
 }
 static inline DWORD nativeWriteCall(BYTE *site, BYTE *target)
 {

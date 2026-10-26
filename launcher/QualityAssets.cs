@@ -1,98 +1,74 @@
 using System;
 using System.Collections.Generic;
-using System.IO;
-using System.Text;
 
 public static partial class RespecAssets
 {
-    public const int QIconTextId = 30004990;
-    public static byte[] PatchQualityLayout(byte[] source)
+    public const int QSoulsTextId = 15000993;
+    public const int QualityRequest=70000980, QualityDone=70000981, QualityReady=70000983;
+    public const int QSoulsMenuIndex = 14;
+    static Condition CopyQualityCondition(Condition source)
     {
-        // The uncompressed file is the unused PTDE-era layout. Only the active
-        // Remastered layout has the current four-category Start bar.
-        if (Encoding.ASCII.GetString(source, 0, 4) != "DCX\0") return source;
-        byte[] b = StartingClasses.Unpack(source);
-        Need(Encoding.ASCII.GetString(b, 0, 4) == "DRB\0", "Unsupported quality menu layout.");
-        var blocks = new List<LayoutBlock>(); var names = new Dictionary<string, LayoutBlock>();
-        for (int p = 16; p < b.Length;) {
-            Bounds(b, p, 16); string name = Encoding.ASCII.GetString(b, p, 4);
-            int size = I(b, p + 4), count = Count(I(b, p + 8));
-            Need(size >= 0 && size % 16 == 0 && I(b, p + 12) == 0, "Invalid quality DRB section.");
-            var block = new LayoutBlock { Name = name, Count = count, Bytes = Slice(b, p + 16, size) };
-            blocks.Add(block); names.Add(name.TrimEnd('\0'), block); p = checked(p + 16 + size);
+        var result = new Condition(source.Target, (byte[])source.Eval.Clone());
+        foreach (var c in source.Pass) {
+            var copy = new Command(c.Id); copy.Bank = c.Bank;
+            foreach (var arg in c.Args) copy.Args.Add((byte[])arg.Clone());
+            result.Pass.Add(copy);
         }
-        var strings = names["STR"]; var shapes = names["SHAP"]; var data = names["SHPR"];
-        var controls = names["CTRL"]; var objects = names["DLGO"]; var groups = names["DLG"];
-        Need(objects.Count * 32 == objects.Bytes.Length && groups.Count * 64 == groups.Bytes.Length, "Invalid quality DRB records.");
-        int used = 0;
-        for (int i = 0; i < strings.Count; ++i) {
-            string text = LayoutString(strings.Bytes, used);
-            used += Encoding.Unicode.GetByteCount(text) + 2;
-        }
-        int root = -1, cursor = -1, button = -1, rightAnchor = -1, icons = 0;
-        for (int g = 0; g < groups.Count; ++g) {
-            int at = g * 64; string groupName = LayoutString(strings.Bytes, I(groups.Bytes, at));
-            int count = Count(I(groups.Bytes, at + 32)), start = I(groups.Bytes, at + 36);
-            Bounds(objects.Bytes, start, count * 32);
-            if (groupName == "R00-00") { Need(root < 0, "Duplicate Start bar."); root = at; }
-            for (int j = 0; j < count; ++j) {
-                int obj = start + j * 32; string name = LayoutString(strings.Bytes, I(objects.Bytes, obj));
-                if (groupName == "I06-00" && name == "button0_0") button = obj;
-                if (groupName != "R00-00") continue;
-                Need(name != "icon_q_souls" && name != "cursor0_4", "Q category already patched.");
-                if (name.StartsWith("cursor0_", StringComparison.Ordinal)) icons++;
-                if (name == "cursor0_3") cursor = obj;
-                if (name == "category_right") rightAnchor = obj;
+        foreach (var child in source.Sub) result.Sub.Add(CopyQualityCondition(child));
+        return result;
+    }
+    static Condition QualitySelection(long target, int index)
+    {
+        return new Condition(target, new byte[] { 0x57, 0x84, (byte)(64 + index), 0x95, 0xa1 });
+    }
+    static void PatchQualityBonfires(Esd esd)
+    {
+        foreach (var states in esd.Groups.Values) {
+            var menus = new List<State>();
+            foreach (var state in states.Values) foreach (var c in state.Enter)
+                if (c.Bank == 1 && c.Id == 19 && Integer(c.Args[1]) == TextId) menus.Add(state);
+            foreach (var menu in menus) {
+                foreach (var c in menu.Enter) if (c.Bank == 1 && c.Id == 19)
+                    Need(Integer(c.Args[0]) != QSoulsMenuIndex, "Q Souls bonfire menu index collision.");
+                long id = 0; foreach (long key in states.Keys) if (key >= id) id = key + 1;
+                Need(states.ContainsKey(20), "Native Level Up wait state missing.");
+                var open=new State { Id=id };
+                open.Enter.Add(new Command(67)); // Exactly the reference Respec flow: close the native list first.
+                open.Enter.Add(new Command(11,QualityDone,0));
+                open.Enter.Add(new Command(11,QualityRequest,1));
+                open.Conditions.Add(new Condition(id+1,Number(1)));
+                var wait=new State { Id=id+1 };
+                foreach (var c in states[20].Conditions) if (c.Target!=menu.Id) wait.Conditions.Add(CopyQualityCondition(c));
+                wait.Conditions.Add(new Condition(id+2,QualityFlagTest(QualityDone,1)));
+                wait.Conditions.Add(new Condition(id+2,QualityFlagTest(QualityReady,0)));
+                wait.Exit.Add(new Command(11,QualityRequest,0));
+                var back=new State { Id=id+2 };
+                back.Enter.Add(new Command(11,QualityRequest,0)); back.Enter.Add(new Command(11,QualityDone,0));
+                back.Conditions.Add(new Condition(menu.Id,Number(1)));
+                menu.Enter.Add(new Command(11,QualityRequest,0)); menu.Enter.Add(new Command(11,QualityDone,0));
+                menu.Enter.Add(new Command(19,QSoulsMenuIndex,QSoulsTextId,QualityReady));
+                menu.Conditions.Add(QualitySelection(open.Id,QSoulsMenuIndex));
+                states.Add(open.Id,open); states.Add(wait.Id,wait); states.Add(back.Id,back);
             }
         }
-        Need(root >= 0 && cursor >= 0 && button >= 0 && rightAnchor >= 0 && icons == 4, "Expected four native Start categories.");
-        int cursorData = I(shapes.Bytes, I(objects.Bytes, cursor + 4) + 4);
-        int newLeft = BitConverter.ToInt16(data.Bytes, cursorData) + 50;
-        int newTop = BitConverter.ToInt16(data.Bytes, cursorData + 2);
-        int newRight = BitConverter.ToInt16(data.Bytes, cursorData + 4) + 50;
-        int newBottom = BitConverter.ToInt16(data.Bytes, cursorData + 6);
-        // Leave the four original icons and their hit boxes in place. Move only
-        // the right shoulder-button guide to make room for the fifth category.
-        int rightData = I(shapes.Bytes, I(objects.Bytes, rightAnchor + 4) + 4);
-        PutShort(data.Bytes, rightData, BitConverter.ToInt16(data.Bytes, rightData) + 50);
-        PutShort(data.Bytes, rightData + 4, BitConverter.ToInt16(data.Bytes, rightData + 4) + 50);
-        byte[] textData = Slice(strings.Bytes, 0, used); var added = new List<byte>();
-        int[] templates = { cursor, button }; string[] labels = { "cursor0_4", "icon_q_souls" };
-        for (int j = 0; j < 2; ++j) {
-            byte[] obj = Slice(objects.Bytes, templates[j], 32);
-            byte[] shape = Slice(shapes.Bytes, I(obj, 4), 8);
-            string kind = LayoutString(strings.Bytes, I(shape, 0));
-            Need(kind == (j == 0 ? "Null" : "Text"), "Unexpected quality row template.");
-            byte[] parameter = Slice(data.Bytes, I(shape, 4), j == 0 ? 8 : 50);
-            PutShort(parameter, 0, newLeft + (j == 1 ? 6 : 0));
-            PutShort(parameter, 2, newTop + (j == 1 ? 4 : 0));
-            PutShort(parameter, 4, newRight); PutShort(parameter, 6, newBottom);
-            if (j == 1) {
-                Need(I(parameter, 40) == 30004000, "Unexpected text template.");
-                Put(parameter, 32, 32); Put(parameter, 40, QIconTextId);
-            }
-            Put(shape, 4, data.Bytes.Length); data.Bytes = Append(data.Bytes, parameter);
-            Put(obj, 0, textData.Length); textData = Append(textData, Encoding.Unicode.GetBytes(labels[j] + "\0"));
-            Put(obj, 4, shapes.Count * 8); shapes.Bytes = Append(Slice(shapes.Bytes, 0, shapes.Count * 8), shape); shapes.Count++;
-            int control = I(obj, 8); Put(obj, 8, controls.Count * 8);
-            controls.Bytes = Append(Slice(controls.Bytes, 0, controls.Count * 8), Slice(controls.Bytes, control, 8)); controls.Count++;
-            added.AddRange(obj);
+    }
+    static byte[] QualityFlagTest(int flag,int value)
+    {
+        var result=new List<byte>(); result.Add(0x4f);
+        byte[] argument=Number(flag); for(int i=0;i<argument.Length-1;++i) result.Add(argument[i]);
+        result.Add(0x85); result.Add((byte)(64+value)); result.Add(0x95); result.Add(0xa1);
+        return result.ToArray();
+    }
+    public static void CheckQualityFlagCollision(byte[] bytes)
+    {
+        for(int i=0;i<=bytes.Length-4;++i) {
+            int n=BitConverter.ToInt32(bytes,i);
+            Need(n<QualityRequest || n>QualityReady,"Q Souls bridge flags collide with installed scripts.");
         }
-        strings.Bytes = textData; strings.Count += 2;
-        int insertion = I(groups.Bytes, root + 36) + I(groups.Bytes, root + 32) * 32;
-        objects.Bytes = Append(Append(Slice(objects.Bytes, 0, insertion), added.ToArray()), Slice(objects.Bytes, insertion, objects.Bytes.Length - insertion)); objects.Count += 2;
-        for (int g = 0; g < groups.Count; ++g) {
-            int at = g * 64;
-            if (at == root) Put(groups.Bytes, at + 32, I(groups.Bytes, at + 32) + 2);
-            else if (I(groups.Bytes, at + 36) >= insertion) Put(groups.Bytes, at + 36, I(groups.Bytes, at + 36) + 64);
-        }
-        using (var output = new Output()) {
-            output.W.Write(Slice(b, 0, 16));
-            foreach (var block in blocks) {
-                output.W.Write(Encoding.ASCII.GetBytes(block.Name)); output.W.Write((block.Bytes.Length + 15) & ~15);
-                output.W.Write(block.Count); output.W.Write(0); output.W.Write(block.Bytes); output.Align(16);
-            }
-            return StartingClasses.Pack(source, output.Bytes());
-        }
+    }
+    static byte[] QualityTexts(byte[] bytes)
+    {
+        bytes = PatchFmg(bytes, "Q Souls", QSoulsTextId);
+        return bytes;
     }
 }

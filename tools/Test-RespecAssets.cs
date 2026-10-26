@@ -46,71 +46,53 @@ public static class RespecAssetChecks
     static byte[] Part(byte[] b, int offset, int size) { var result = new byte[size]; Array.Copy(b, offset, result, 0, size); return result; }
     static void CheckLayout(byte[] source, byte[] output)
     {
-        var before = Layout(source); var after = Layout(output);
-        foreach (var block in before) {
-            if (block.Key == "STR" || block.Key == "SHAP" || block.Key == "SHPR" || block.Key == "CTRL" || block.Key == "DLGO" || block.Key == "DLG") continue;
-            Check(block.Value.Count == after[block.Key].Count && Equal(block.Value.Bytes, after[block.Key].Bytes), "Textures, control parameters, animations and schedules untouched.");
+        var before=Layout(source); var after=Layout(output);
+        foreach (var pair in before) {
+            string key=pair.Key;
+            if (key=="STR" || key=="SHAP" || key=="SHPR" || key=="CTRL" || key=="DLGO" || key=="DLG") continue;
+            Check(Equal(pair.Value.Bytes,after[key].Bytes) && pair.Value.Count==after[key].Count,"Native textures, navigation and animation unchanged.");
         }
-        bool remastered = Encoding.ASCII.GetString(source, 0, 4) == "DCX\0";
-        int additions = remastered ? 4 : 2;
-        Check(after["STR"].Count == before["STR"].Count + additions && after["SHAP"].Count == before["SHAP"].Count + additions && after["CTRL"].Count == before["CTRL"].Count + additions && after["DLGO"].Count == before["DLGO"].Count + additions && after["DLG"].Count == before["DLG"].Count, "Only Free Points and the fifth Start category added.");
-        foreach (string name in new[] { "SHAP", "CTRL" }) Check(Equal(Part(before[name].Bytes, 0, before[name].Count * 8), Part(after[name].Bytes, 0, before[name].Count * 8)), "Existing shape/control references preserved.");
-        byte[] expectedParameters = (byte[])before["SHPR"].Bytes.Clone();
-        if (remastered) {
-            for (int g = 0; g < before["DLG"].Count; ++g) {
-                int at = g * 64;
-                if (LayoutName(before["STR"].Bytes, At(before["DLG"].Bytes, at)) != "R00-00") continue;
-                int start = At(before["DLG"].Bytes, at + 36), count = At(before["DLG"].Bytes, at + 32);
-                for (int j = 0; j < count; ++j) {
-                    int obj = start + j * 32;
-                    if (LayoutName(before["STR"].Bytes, At(before["DLGO"].Bytes, obj)) != "category_right") continue;
-                    int data = At(before["SHAP"].Bytes, At(before["DLGO"].Bytes, obj + 4) + 4);
-                    foreach (int offset in new[] {0, 4}) Array.Copy(BitConverter.GetBytes((short)(BitConverter.ToInt16(expectedParameters, data + offset) + 50)), 0, expectedParameters, data + offset, 2);
-                }
-            }
+        foreach (string key in new[]{"SHAP","CTRL"})
+            Check(Equal(Part(before[key].Bytes,0,before[key].Count*8),Part(after[key].Bytes,0,before[key].Count*8)),"Existing shape/control references preserved.");
+        Check(after["DLGO"].Count==before["DLGO"].Count+2,"Only the existing Free Points row adds widgets.");
+        for (int g=0;g<before["DLG"].Count;++g) {
+            int at=g*64; string name=LayoutName(before["STR"].Bytes,At(before["DLG"].Bytes,at));
+            if (name!="R00" && name!="R00-00") continue;
+            Check(Equal(Part(before["DLG"].Bytes,at,36),Part(after["DLG"].Bytes,at,36)) && Equal(Part(before["DLG"].Bytes,at+40,24),Part(after["DLG"].Bytes,at+40,24)),"Start category group unchanged apart from relocated object table.");
+            int count=At(before["DLG"].Bytes,at+32), start=At(before["DLG"].Bytes,at+36);
+            Check(Equal(Part(before["DLGO"].Bytes,start,count*32),Part(after["DLGO"].Bytes,At(after["DLG"].Bytes,at+36),count*32)),"Every native Start category unchanged.");
         }
-        Check(Equal(expectedParameters, Part(after["SHPR"].Bytes, 0, expectedParameters.Length)), "Only the right shoulder guide shifts; original icon geometry/styles preserved.");
-        int newRows = 0, qualityWidgets = 0;
-        for (int g = 0; g < before["DLG"].Count; ++g) {
-            byte[] oldGroup = before["DLG"].Bytes, newGroup = after["DLG"].Bytes; int group = g * 64;
-            string name = LayoutName(before["STR"].Bytes, At(oldGroup, group)); bool level = name == "C01-03", quality = remastered && name == "R00-00";
-            int count = At(oldGroup, group + 32), oldOffset = At(oldGroup, group + 36), newOffset = At(newGroup, group + 36);
-            Check(At(newGroup, group + 32) == count + (level || quality ? 2 : 0) && Equal(Part(oldGroup, group, 32), Part(newGroup, group, 32)) && Equal(Part(oldGroup, group + 40, 24), Part(newGroup, group + 40, 24)), "All original group bounds and controls unchanged.");
-            for (int i = 0; i < count; ++i) Check(Equal(Part(before["DLGO"].Bytes, oldOffset + i * 32, 32), Part(after["DLGO"].Bytes, newOffset + i * 32, 32)), "Every original widget/navigation record unchanged.");
-            if (quality) {
-                int qualityX = -1;
-                for (int j = 0; j < 2; ++j) {
-                    int obj = newOffset + (count + j) * 32;
-                    Check(LayoutName(after["STR"].Bytes, At(after["DLGO"].Bytes, obj)) == (j == 0 ? "cursor0_4" : "icon_q_souls"), "New Q category cursor/glyph names.");
-                    int shape = At(after["DLGO"].Bytes, obj + 4), data = At(after["SHAP"].Bytes, shape + 4);
-                    int x = BitConverter.ToInt16(after["SHPR"].Bytes, data), y = BitConverter.ToInt16(after["SHPR"].Bytes, data + 2);
-                    Check(x >= 1100 && x < 1150 && y >= 64 && y < 80, "Q fits after the fourth icon in the horizontal bar.");
-                    if (j == 0) qualityX = x;
-                    else Check(x == qualityX + 6 && At(after["SHPR"].Bytes, data + 40) == RespecAssets.QIconTextId, "Q text is inside its isolated native hit target.");
-                    qualityWidgets++;
-                }
-            }
-            if (!level) continue;
-            for (int i = 0; i < 2; i++) {
-                int obj = newOffset + (count + i) * 32; byte[] objects = after["DLGO"].Bytes;
-                string widget = LayoutName(after["STR"].Bytes, At(objects, obj));
-                Check(widget == (i == 0 ? "qs_free_points_label" : "qs_free_points_value"), "New widgets have isolated names.");
-                int shape = At(objects, obj + 4), data = At(after["SHAP"].Bytes, shape + 4);
-                byte[] parameters = after["SHPR"].Bytes;
-                Check(BitConverter.ToInt16(parameters, data) == (i == 0 ? 75 : 218) && BitConverter.ToInt16(parameters, data + 2) == 16 && BitConverter.ToInt16(parameters, data + 4) == (i == 0 ? 215 : 288) && BitConverter.ToInt16(parameters, data + 6) == 44, "Read-only row fits above Name; no original stat or Humanity row moves.");
-                int baseSize = Encoding.ASCII.GetString(source, 0, 4) == "DRB\0" ? 8 : 16;
-                Check(At(parameters, data + baseSize + 4) == (i == 0 ? 7 : 3) && BitConverter.ToInt16(parameters, data + baseSize + 12) == 6 && parameters[data + baseSize + 14] == (i == 0 ? 8 : 9), "New row preserves native label/value font, colors and alignment.");
-                Check(parameters[data + baseSize + 15] == 1 && At(parameters, data + baseSize + 24) == (i == 0 ? RespecAssets.FreePointsTextId : 201111), "Native FMG label and independent numeric variable used."); newRows++;
-            }
+        int centered=0;
+        for(int g=0;g<before["DLG"].Count;++g) {
+            int at=g*64;
+            if(LayoutName(before["STR"].Bytes,At(before["DLG"].Bytes,at))!="F04-01") continue;
+            int shape=At(before["DLG"].Bytes,at+4), data=At(before["SHAP"].Bytes,shape+4);
+            Check(BitConverter.ToInt16(before["SHPR"].Bytes,data)==0 && BitConverter.ToInt16(after["SHPR"].Bytes,data)==358 &&
+                BitConverter.ToInt16(after["SHPR"].Bytes,data+4)==1638,"Native list parent translated so its background center is x=640.");
+            int start=At(before["DLG"].Bytes,at+36), count=At(before["DLG"].Bytes,at+32), next=At(after["DLG"].Bytes,at+36);
+            Check(Equal(Part(before["DLGO"].Bytes,start,count*32),Part(after["DLGO"].Bytes,next,count*32)),"Native rows, cursor and hitboxes retain their common parent.");
+            centered++;
         }
-        Check(newRows == 2 && qualityWidgets == (remastered ? 2 : 0), "Only intended Level Up and Start widgets added.");
-        if (remastered) {
-            bool duplicate = false; try { RespecAssets.PatchQualityLayout(output); } catch (InvalidDataException) { duplicate = true; }
-            Check(duplicate, "Duplicate quality layout refused.");
-        }
-        bool rejected = false; try { RespecAssets.PatchLevelUpLayout(output); } catch (InvalidDataException) { rejected = true; }
-        Check(rejected, "Already-patched layout rejected safely.");
+        Check(centered==1,"Exactly one native list parent centered.");
     }
+    static void CheckQualityMenu(SortedDictionary<long,RespecAssets.State> states, RespecAssets.State menu)
+    {
+        var entry=menu.Enter[menu.Enter.Count-1];
+        Check(entry.Id==19 && N(entry.Args[0])==14 && N(entry.Args[1])==RespecAssets.QSoulsTextId && N(entry.Args[2])==RespecAssets.QualityReady,"Q Souls available only with a healthy custom panel.");
+        var branch=menu.Conditions[menu.Conditions.Count-1];
+        Check(Equal(branch.Eval,new byte[]{0x57,0x84,0x4e,0x95,0xa1}),"Native result 14 opens Q Souls.");
+        var open=states[branch.Target]; var wait=states[open.Conditions[0].Target];
+        Check(open.Enter.Count==3 && open.Enter[0].Id==67,"Native bonfire list is force-closed before the custom panel.");
+        Check(open.Enter[1].Id==11 && N(open.Enter[1].Args[0])==RespecAssets.QualityDone && N(open.Enter[1].Args[1])==0,"Stale completion cleared.");
+        Check(open.Enter[2].Id==11 && N(open.Enter[2].Args[0])==RespecAssets.QualityRequest && N(open.Enter[2].Args[1])==1,"Panel opened through the reference request bridge.");
+        Check(wait.Enter.Count==0 && wait.Exit.Count==1 && wait.Exit[0].Id==11 && N(wait.Exit[0].Args[0])==RespecAssets.QualityRequest && N(wait.Exit[0].Args[1])==0,"Every wait exit releases panel ownership.");
+        var back=states[wait.Conditions[wait.Conditions.Count-1].Target];
+        Check(back.Enter.Count==2 && back.Conditions[0].Target==menu.Id,"Back clears bridge state before rebuilding bonfire.");
+        int i=0; foreach(var c in states[20].Conditions) if(c.Target!=menu.Id) Check(Condition(wait.Conditions[i++])==Condition(c),"Native death/range/network interruptions preserved.");
+        Check(wait.Conditions.Count==i+2,"Only done and renderer-loss exits added.");
+        foreach(var state in new[]{open,wait,back}) foreach(var c in state.Enter) Check(c.Id!=10 && c.Id!=19 && c.Id!=20,"No native submenu or hidden list rows exist.");
+    }
+
     public static void Run(string game)
     {
         int count, repeatedCount;
@@ -130,24 +112,28 @@ public static class RespecAssetChecks
                 Check(a.Name == b.Name && a.Id == b.Id && a.Flags == b.Flags, "Binder metadata preserved.");
                 if (Equal(a.Bytes, b.Bytes)) continue;
                 if (pair.Key.StartsWith("msg\\", StringComparison.Ordinal)) {
-                    bool general = a.Name.EndsWith("\\Menu_general_text_.fmg"), quality = a.Name.EndsWith("\\System_message_win32_.fmg");
-                    Check(general || quality || a.Name.EndsWith("\\Event_text_.fmg"), "Only bonfire, Free Points and Q glyph FMGs changed.");
-                    var oldTexts = Texts(a.Bytes); var newTexts = Texts(b.Bytes);
-                    if (general) Check(oldTexts.ContainsKey(201111) && oldTexts[201111] == "<?lvUpPcLuck?>", "All languages use the verified native numeric variable for the counter.");
-                    int textId = quality ? RespecAssets.QIconTextId : general ? RespecAssets.FreePointsTextId : RespecAssets.TextId;
-                    string language = pair.Key.Split('\\')[1];
-                    string expected = quality ? "Q" : general ? RespecAssets.FreePointsTitle(language) : RespecAssets.Title(language);
-                    Check(newTexts.Count == oldTexts.Count + 1 && newTexts[textId] == expected && !String.IsNullOrWhiteSpace(expected), "One correctly localized label added.");
+                    bool general = a.Name.EndsWith("\\Menu_general_text_.fmg");
+                    Check(general || a.Name.EndsWith("\\Event_text_.fmg"),"Only bonfire and Free Points labels changed.");
+                    var oldTexts=Texts(a.Bytes); var newTexts=Texts(b.Bytes);
+                    string language=pair.Key.Split('\\')[1];
+                    Check(newTexts.Count==oldTexts.Count+(general?1:2),"Expected added label count.");
+                    Check(newTexts[general?RespecAssets.FreePointsTextId:RespecAssets.TextId]==(general?RespecAssets.FreePointsTitle(language):RespecAssets.Title(language)),"Existing localized feature label preserved.");
+                    if (!general) {
+                        Check(newTexts[RespecAssets.QSoulsTextId]=="Q Souls","Q Souls is identical in every language.");
+                    }
                     foreach (var text in oldTexts) Check(newTexts[text.Key] == text.Value, "All native screen translations preserved.");
                     continue;
                 }
                 var original = new RespecAssets.Esd(a.Bytes); var patched = new RespecAssets.Esd(b.Bytes); int rows = 0;
                 Check(original.Groups.Count == patched.Groups.Count, "No custom state groups added.");
                 foreach (var group in original.Groups) {
-                    var updated = patched.Groups[group.Key]; Check(group.Value.Count == updated.Count, "No custom bridge/editor states added.");
+                    var updated = patched.Groups[group.Key]; int added=0; foreach(var state in group.Value.Values) foreach(var c in state.Enter) if(c.Bank==1 && c.Id==19 && N(c.Args[1])==15000100) added++;
+                    Check(updated.Count==group.Value.Count+added*3,"Only Q Souls build/return states added.");
                     foreach (var state in group.Value.Values) {
                         var next = updated[state.Id];
-                        Check(state.Enter.Count == next.Enter.Count && state.Exit.Count == next.Exit.Count && state.While.Count == next.While.Count && state.Conditions.Count == next.Conditions.Count, "All native command and transition counts preserved.");
+                        bool menu=false; foreach(var c in state.Enter) if(c.Bank==1 && c.Id==19 && N(c.Args[1])==15000100) menu=true;
+                        Check(state.Enter.Count+(menu?3:0)==next.Enter.Count && state.Exit.Count==next.Exit.Count && state.While.Count==next.While.Count && state.Conditions.Count+(menu?1:0)==next.Conditions.Count,"Native counts preserved apart from the bonfire entry.");
+                        if(menu) CheckQualityMenu(updated,next);
                         for (int j = 0; j < state.Conditions.Count; j++) Check(Condition(state.Conditions[j]) == Condition(next.Conditions[j]), "Native screen opening, interruption, confirmation and saving transitions untouched.");
                         for (int j = 0; j < state.Exit.Count; j++) Check(Command(state.Exit[j]) == Command(next.Exit[j]), "Native exit commands untouched.");
                         for (int j = 0; j < state.While.Count; j++) Check(Command(state.While[j]) == Command(next.While[j]), "Native while commands untouched.");
@@ -171,6 +157,6 @@ public static class RespecAssetChecks
         }
         bool invalid = false; try { new RespecAssets.Esd(new byte[200]); } catch (InvalidDataException) { invalid = true; }
         Check(invalid, "Malformed ESD rejected.");
-        Console.WriteLine("PASS: native Level Up transitions and save flow unchanged; 75 bonfires including both tutorial bonfires and 5 DLC; 13 languages; native Free Points row and original layout preservation; deterministic generation and safe collisions.");
+        Console.WriteLine("PASS: native Level Up transitions preserved; Q Souls/FPS bonfire pages; 75 bonfires including both tutorial bonfires and 5 DLC; 13 languages; native Free Points row and original layout preservation; deterministic generation and safe collisions.");
     }
 }

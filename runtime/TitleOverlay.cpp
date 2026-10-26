@@ -25,6 +25,7 @@ template<class T> struct Com {
 char label[64];
 BOOL (*isVisible)();
 BOOL (*qualityText)(char *, size_t);
+void (*qualityFrame)(HWND, BOOL);
 void (*writeLog)(const char *);
 
 
@@ -224,8 +225,8 @@ struct Renderer {
         HGDIOBJ oldFont = SelectObject(dc, font);
         SIZE size = {};
         BOOL measured = GetTextExtentPoint32A(dc, contents, (int)strlen(contents), &size);
-        UINT width = panel ? height * 32 : measured ? (UINT)size.cx + 4 : 0;
-        UINT rows = panel ? height * 13 : measured ? (UINT)size.cy + 2 : 0;
+        UINT width = panel ? height * 27 : measured ? (UINT)size.cx + 4 : 0;
+        UINT rows = panel ? height * 22 : measured ? (UINT)size.cy + 2 : 0;
         BITMAPINFO info = {};
         info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
         info.bmiHeader.biWidth = (LONG)width; info.bmiHeader.biHeight = -(LONG)rows;
@@ -238,14 +239,53 @@ struct Renderer {
             memset(pixels, 0, (size_t)width * rows * 4);
             SetTextColor(dc, RGB(255,255,255)); SetBkMode(dc, TRANSPARENT);
             RECT rect = {(LONG)height, (LONG)height, (LONG)(width - height), (LONG)(rows - height)};
-            BOOL drawn = panel ? DrawTextA(dc, contents, -1, &rect, DT_LEFT | DT_TOP | DT_NOPREFIX) != 0 :
-                TextOutA(dc, 2, 0, contents, (int)strlen(contents));
+            BOOL drawn;
+            if (panel) {
+                const char *line=strchr(contents,'\n');
+                int titleLength=line ? (int)(line-contents) : (int)strlen(contents);
+                HFONT heading=CreateFontW(-(int)(height*3/2),0,0,0,FW_BOLD,FALSE,FALSE,FALSE,
+                    DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,ANTIALIASED_QUALITY,
+                    DEFAULT_PITCH|FF_ROMAN,L"Times New Roman");
+                if (heading) SelectObject(dc,heading);
+                SetTextColor(dc,RGB(214,177,106));
+                RECT titleBox={(LONG)height,(LONG)height,(LONG)(width-height),(LONG)(height*3)};
+                drawn=DrawTextA(dc,contents,titleLength,&titleBox,DT_CENTER|DT_TOP|DT_SINGLELINE|DT_NOPREFIX)!=0;
+                SelectObject(dc,font); if (heading) DeleteObject(heading);
+                HPEN rule=CreatePen(PS_SOLID,1,RGB(160,125,65));
+                if (rule) {
+                    HGDIOBJ previousPen=SelectObject(dc,rule);
+                    MoveToEx(dc,(int)height*3,(int)height*3,nullptr);
+                    LineTo(dc,(int)width-(int)height*3,(int)height*3);
+                    SelectObject(dc,previousPen); DeleteObject(rule);
+                }
+                SetTextColor(dc,RGB(255,255,255)); rect.top=(LONG)height*4;
+                const char *body=line ? line+1 : "";
+                while (*body=='\n') ++body;
+                // Use the same inset as the divider, with separate label/value columns.
+                rect.left=(LONG)height*3; rect.right=(LONG)width-(LONG)height*3;
+                rect.top=(LONG)height*5;
+                const char *rowEnd=strchr(body,'\n'), *value=strchr(body,'<');
+                if (value && (!rowEnd || value<rowEnd)) {
+                    int labelLength=(int)(value-body);
+                    while (labelLength>0 && body[labelLength-1]==' ') --labelLength;
+                    RECT labelBox=rect, valueBox=rect;
+                    labelBox.right=(LONG)width/2; valueBox.left=(LONG)width/2;
+                    labelBox.bottom=valueBox.bottom=rect.top+(LONG)height*2;
+                    drawn=DrawTextA(dc,body,labelLength,&labelBox,DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_NOPREFIX)!=0 && drawn;
+                    int valueLength=rowEnd ? (int)(rowEnd-value) : (int)strlen(value);
+                    drawn=DrawTextA(dc,value,valueLength,&valueBox,DT_RIGHT|DT_VCENTER|DT_SINGLELINE|DT_NOPREFIX)!=0 && drawn;
+                    if (rowEnd) {
+                        rect.top+=(LONG)height*4;
+                        drawn=DrawTextA(dc,rowEnd+1,-1,&rect,DT_LEFT|DT_TOP|DT_NOPREFIX|DT_WORDBREAK)!=0 && drawn;
+                    }
+                } else if (*body) drawn=DrawTextA(dc,body,-1,&rect,DT_LEFT|DT_TOP|DT_NOPREFIX|DT_WORDBREAK)!=0 && drawn;
+            } else drawn=TextOutA(dc,2,0,contents,(int)strlen(contents));
             GdiFlush();
             BYTE *bytes = (BYTE *)pixels;
             for (size_t i = 0; i < (size_t)width * rows; ++i) {
-                BYTE shade = bytes[i*4];
-                bytes[i*4] = bytes[i*4+1] = bytes[i*4+2] = (BYTE)((panel ? 20 : 0) + shade * 0.8f);
-                bytes[i*4+3] = panel ? 255 : shade;
+                BYTE shade=bytes[i*4], green=bytes[i*4+1], red=bytes[i*4+2];
+                bytes[i*4]=(BYTE)(red*0.8f); bytes[i*4+1]=(BYTE)(green*0.8f); bytes[i*4+2]=(BYTE)(shade*0.8f);
+                bytes[i*4+3] = panel ? 240 : shade;
             }
             D3D11_TEXTURE2D_DESC desc = {};
             desc.Width = width; desc.Height = rows; desc.MipLevels = desc.ArraySize = 1;
@@ -332,7 +372,13 @@ HRESULT drawFrame(IDXGISwapChain *chain)
     bool showQuality = qualityText && qualityText(quality, sizeof(quality));
     HRESULT drawn = showQuality ? qualityRenderer.draw(chain, quality, true) :
         isVisible && isVisible() ? renderer.draw(chain) : S_OK;
+    if (qualityFrame && !qualityRenderer.raster.p) {
+        Com<ID3D11Device> current;
+        drawn=chain->GetDevice(__uuidof(ID3D11Device),(void **)&current.p);
+        if (SUCCEEDED(drawn)) drawn=qualityRenderer.initialize(current.p);
+    }
     report(drawn);
+    if (qualityFrame) { DXGI_SWAP_CHAIN_DESC desc={}; if (SUCCEEDED(chain->GetDesc(&desc))) qualityFrame(desc.OutputWindow,SUCCEEDED(drawn)); }
     if (drawn == DXGI_ERROR_DEVICE_REMOVED || drawn == DXGI_ERROR_DEVICE_RESET) { renderer.reset(); qualityRenderer.reset(); }
     return drawn;
 }
@@ -364,4 +410,9 @@ extern "C" DWORD initializeTitleOverlay(const wchar_t *root, BOOL (*visible)(voi
 extern "C" void setQualityOverlay(BOOL (*text)(char *, size_t))
 {
     Lock guard(&renderLock); qualityText = text;
+}
+
+extern "C" void setQualityFrame(void (*frame)(HWND, BOOL))
+{
+    Lock guard(&renderLock); qualityFrame=frame;
 }

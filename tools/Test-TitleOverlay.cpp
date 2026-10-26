@@ -5,7 +5,7 @@
 
 static BOOL qualityVisible = FALSE;
 static BOOL testQuality(char *text, size_t capacity) {
-    snprintf(text, capacity, "Q Souls\n\n> Quality settings\n\nFPS limit: < 120 FPS >\n\nLeft / Right: change\nBack: return");
+    snprintf(text, capacity, "Q Souls\n\nFPS Cap < 120 >");
     return qualityVisible;
 }
 static BOOL visible = TRUE;
@@ -49,7 +49,7 @@ static HRESULT clear(IDXGISwapChain *chain, ID3D11Device *device, ID3D11DeviceCo
     return hr;
 }
 
-struct Pixels { UINT count, minX, maxX, minY, maxY; };
+struct Pixels { UINT count, minX, maxX, minY, maxY, goldCount, goldMinX, goldMaxX; };
 static HRESULT pixels(IDXGISwapChain *chain, ID3D11Device *device,
                        ID3D11DeviceContext *context, Pixels *result, const wchar_t *exportPath = nullptr)
 {
@@ -73,14 +73,24 @@ static HRESULT pixels(IDXGISwapChain *chain, ID3D11Device *device,
             header.bfType = 0x4d42; header.bfOffBits = sizeof(header) + sizeof(info); header.bfSize = header.bfOffBits + desc.Width * desc.Height * 4;
             info.biSize = sizeof(info); info.biWidth = (LONG)desc.Width; info.biHeight = -(LONG)desc.Height; info.biPlanes = 1; info.biBitCount = 32; info.biCompression = BI_RGB;
             fwrite(&header, sizeof(header), 1, file); fwrite(&info, sizeof(info), 1, file);
-            for (UINT row = 0; row < desc.Height; ++row) fwrite((BYTE *)map.pData + row * map.RowPitch, desc.Width * 4, 1, file);
+            for (UINT row=0;row<desc.Height;++row) for(UINT x=0;x<desc.Width;++x) {
+                BYTE *pixel=(BYTE *)map.pData+row*map.RowPitch+x*4;
+                BYTE bgra[]={pixel[2],pixel[1],pixel[0],pixel[3]}; fwrite(bgra,4,1,file);
+            }
             fclose(file);
         }
     }
-    *result = {0, desc.Width, 0, desc.Height, 0};
+    *result = {0, desc.Width, 0, desc.Height, 0, 0, desc.Width, 0};
+    UINT font=layout(desc.Width,desc.Height).font;
+    UINT headingBottom=(desc.Height-font*22)/2+font*3;
     for (UINT y = 0; y < desc.Height; ++y) {
         BYTE *row = (BYTE *)map.pData + y * map.RowPitch;
         for (UINT x = 0; x < desc.Width; ++x) if (row[x*4] || row[x*4+1] || row[x*4+2]) {
+            if(y<headingBottom && row[x*4]>row[x*4+1]+10 && row[x*4+1]>row[x*4+2]+10) {
+                ++result->goldCount;
+                if(x<result->goldMinX) result->goldMinX=x;
+                if(x>result->goldMaxX) result->goldMaxX=x;
+            }
             ++result->count;
             if (x < result->minX) result->minX = x;
             if (x > result->maxX) result->maxX = x;
@@ -192,8 +202,9 @@ int wmain(int argc, wchar_t **argv)
     context->GetPredication(&restoredPredicate.p, &predicateValue);
     CHECK(restoredPredicate.p == gamePredicate.p && !predicateValue, "game predicate and comparison restored");
     context->SetPredication(nullptr, FALSE);
+    wchar_t preview[MAX_PATH]; swprintf(preview,MAX_PATH,L"%ls\\quality-panel.bmp",argv[2]);
     Pixels pipelinePixels;
-    CHECK(SUCCEEDED(pixels(chain.p, device.p, context.p, &pipelinePixels)) && pipelinePixels.count > 100,
+    CHECK(SUCCEEDED(pixels(chain.p, device.p, context.p, &pipelinePixels, preview)) && pipelinePixels.count > 100,
           "label draws despite game geometry shader and predication");
     Com<ID3D11RenderTargetView> gotTarget;
     context->OMGetRenderTargets(1, &gotTarget.p, nullptr);
@@ -264,6 +275,20 @@ int wmain(int argc, wchar_t **argv)
     CHECK(SUCCEEDED(renderer.draw(chain.p)), "recreate renderer after device reset");
     CHECK(*(void ***)chain.p == nativeTable && nativeTable[8] == nativePresent, "all native graphics dispatch remains unchanged");
     renderer.reset();
+    context->ClearState();
+    CHECK(SUCCEEDED(chain->ResizeBuffers(1,1920,1080,DXGI_FORMAT_UNKNOWN,0)),"preview resolution");
+    {
+        Com<ID3D11Texture2D> backbuffer; Com<ID3D11RenderTargetView> background;
+        CHECK(SUCCEEDED(chain->GetBuffer(0,__uuidof(ID3D11Texture2D),(void **)&backbuffer.p)) &&
+            SUCCEEDED(device->CreateRenderTargetView(backbuffer.p,nullptr,&background.p)),"preview background");
+        const FLOAT color[]={0.18f,0.20f,0.22f,1}; context->ClearRenderTargetView(background.p,color);
+    }
+    qualityVisible=TRUE; visible=FALSE;
+    CHECK(SUCCEEDED(drawFrame(chain.p)),"reference panel preview");
+    CHECK(qualityRenderer.textWidth==27*26 && qualityRenderer.textHeight==22*26,"exact reference panel dimensions at 1080p");
+    Pixels previewPixels;
+    CHECK(SUCCEEDED(pixels(chain.p,device.p,context.p,&previewPixels,preview)),"export isolated reference-style preview");
+    CHECK(previewPixels.goldCount>100 && abs((int)(previewPixels.goldMinX+previewPixels.goldMaxX)-1920)<=4,"gold headline is centered horizontally");
     qualityRenderer.reset(); setQualityOverlay(nullptr);
     chain.reset(); DestroyWindow(window);
     wchar_t fixturePath[MAX_PATH];

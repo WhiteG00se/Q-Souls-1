@@ -5,7 +5,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 
 // DSR BND3, FMG v1 and 64-bit ESD layouts: JKAnderson/SoulsFormats.
-// Keep native bonfire behavior; replace only the Level Up label and its availability.
+// Preserve native bonfire behavior alongside Level Up and Q Souls settings.
 public static partial class RespecAssets
 {
     public const int TextId = 15000990, FreePointsTextId = 109990;
@@ -180,6 +180,7 @@ public static partial class RespecAssets
     {
         int patched = 0;
         foreach (var entry in binder.Entries) {
+            CheckQualityFlagCollision(entry.Bytes);
             var esd = new Esd(entry.Bytes); bool changed = false;
             foreach (var group in esd.Groups.Values) foreach (var state in group.Values) foreach (var command in state.Enter) {
                 if (command.Bank != 1 || command.Id != 19 || command.Args.Count != 3) continue;
@@ -189,7 +190,7 @@ public static partial class RespecAssets
                 command.Args[2] = Number(-1); // Includes both tutorial bonfires, before escaping the Asylum.
                 changed = true; patched++;
             }
-            if (changed) { byte[] output = esd.Write(); Need(Same(output, new Esd(output).Write()), "Bonfire ESD round-trip failed."); entry.Bytes = output; }
+            if (changed) { PatchQualityBonfires(esd); byte[] output = esd.Write(); Need(Same(output, new Esd(output).Write()), "Bonfire ESD round-trip failed."); entry.Bytes = output; }
         }
         return patched;
     }
@@ -265,6 +266,17 @@ public static partial class RespecAssets
             if (group == root) Put(groups.Bytes, group + 32, I(groups.Bytes, group + 32) + 2);
             else if (I(groups.Bytes, group + 36) >= insertion) Put(groups.Bytes, group + 36, I(groups.Bytes, group + 36) + 64);
         }
+        int bonfireRoots=0;
+        for(int g=0;g<groups.Count;++g) {
+            int at=g*64;
+            if(LayoutString(strings.Bytes,I(groups.Bytes,at))!="F04-01") continue;
+            int shape=I(groups.Bytes,at+4), data=I(shapes.Bytes,shape+4);
+            Need(BitConverter.ToInt16(parameters.Bytes,data)==0 && BitConverter.ToInt16(parameters.Bytes,data+4)==1280,"Unsupported native talk-list parent bounds.");
+            // Native background spans x=67..497 on the 1280-wide design canvas.
+            // Moving the parent +358 centers it at x=640 without shifting individual hitboxes.
+            PutShort(parameters.Bytes,data,358); PutShort(parameters.Bytes,data+4,1638); bonfireRoots++;
+        }
+        Need(bonfireRoots==1,"Native bonfire list parent missing.");
         using (var output = new Output()) {
             output.W.Write(Slice(b, 0, 16));
             foreach (var block in blocks) {
@@ -322,23 +334,19 @@ public static partial class RespecAssets
             int n = PatchTalk(binder); if (n > 0) output.Add("script\\talk\\" + Path.GetFileName(file), binder.Write()); bonfires += n;
         }
         Need(bonfires > 0, "No compatible bonfire scripts found.");
+        foreach(string file in Directory.GetFiles(Path.Combine(game,"event"),"*.emevd*")) CheckQualityFlagCollision(StartingClasses.Unpack(File.ReadAllBytes(file)));
         foreach (string name in new[] { "menu.drb", "menu.drb.dcx" }) {
             string path = Path.Combine(game, "menu", name); Need(File.Exists(path), "Missing required game component: " + path);
-            output.Add("menu\\" + name, PatchQualityLayout(PatchLevelUpLayout(File.ReadAllBytes(path))));
+            output.Add("menu\\" + name, PatchLevelUpLayout(File.ReadAllBytes(path)));
         }
         foreach (string language in Directory.GetDirectories(messages)) {
             string file = Path.Combine(language, "menu.msgbnd.dcx"); Need(File.Exists(file), "Missing required game component: " + file); var binder = new Binder(File.ReadAllBytes(file)); int count = 0;
-            foreach (var entry in binder.Entries) if (entry.Name.EndsWith("\\Event_text_.fmg", StringComparison.OrdinalIgnoreCase)) { entry.Bytes = PatchFmg(entry.Bytes, Title(Path.GetFileName(language), catalog)); count++; }
+            foreach (var entry in binder.Entries) if (entry.Name.EndsWith("\\Event_text_.fmg", StringComparison.OrdinalIgnoreCase)) { entry.Bytes = QualityTexts(PatchFmg(entry.Bytes, Title(Path.GetFileName(language), catalog))); count++; }
             Need(count > 0, "Event menu text missing: " + file);
             count = 0;
             foreach (var entry in binder.Entries) if (entry.Name.EndsWith("\\Menu_general_text_.fmg", StringComparison.OrdinalIgnoreCase)) {
                 entry.Bytes = PatchFmg(entry.Bytes, FreePointsTitle(Path.GetFileName(language), catalog), FreePointsTextId); count++;
             }
-            int qualityLabels = 0;
-            foreach (var entry in binder.Entries) if (entry.Name.EndsWith("\\System_message_win32_.fmg", StringComparison.OrdinalIgnoreCase)) {
-                entry.Bytes = PatchFmg(entry.Bytes, "Q", QIconTextId); qualityLabels++;
-            }
-            Need(qualityLabels > 0, "Start category text missing: " + file);
             Need(count > 0, "General menu text missing: " + file); output.Add("msg\\" + Path.GetFileName(language) + "\\menu.msgbnd.dcx", binder.Write());
         }
         return output;

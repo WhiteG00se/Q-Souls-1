@@ -3,6 +3,9 @@
 #include <atomic>
 #include <cstdint>
 
+// Q Souls custom panels count as menus for the bonfire softlock watchdog.
+inline std::atomic<int> g_external_menu_active{0};
+
 // Published by the install thread before the scheduler is marked active.
 inline std::atomic<uint32_t> g_target_fps{120};
 inline std::atomic<int> g_scheduler_active{0};
