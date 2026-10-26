@@ -13,5 +13,5 @@ Travel to Cursed Arena from Firelink Shrine: a 48 m circular arena with rolling 
 
 Start menu opens with Equipment selected.
 
-Bonfire menu: Q Souls opens a black settings screen. Use left/right on FPS Cap to choose 30, 60, 120 (default) or 240. Changes save automatically and apply immediately. Disable VSync in PC settings for high FPS.
+Bonfire menu: Q Souls opens a black settings screen. Use up/down to select a setting and left/right to adjust it: FPS (30, 60 default, 120, 240), FOV (Y axis: 40-68 degrees in steps of 4; default 48) and Camera Distance (50-200% in steps of 10, then 225%, 250%, 275%, 300%; default 100%). Default values are marked "(default)". Changes save automatically and apply immediately. Disable VSync in PC settings for high FPS.
 FPS timing fixes: [DS1 FPS Unlock by zofrea1](https://github.com/zofrea1/DS1-FPS-Unlock-PTDE-Remastered), [MIT license](third_party/ds1-fps-unlock/LICENSE).

@@ -264,21 +264,29 @@ struct Renderer {
                 // Use the same inset as the divider, with separate label/value columns.
                 rect.left=(LONG)height*3; rect.right=(LONG)width-(LONG)height*3;
                 rect.top=(LONG)height*5;
-                const char *rowEnd=strchr(body,'\n'), *value=strchr(body,'<');
-                if (value && (!rowEnd || value<rowEnd)) {
+                while (*body) {
+                    const char *rowEnd=strchr(body,'\n'), *value=strchr(body,'<');
+                    if (!value || (rowEnd && value>=rowEnd)) {
+                        if (*body=='\n') { body++; rect.top+=(LONG)height; continue; }
+                        SetTextColor(dc,RGB(255,255,255));
+                        drawn=DrawTextA(dc,body,-1,&rect,DT_LEFT|DT_TOP|DT_NOPREFIX|DT_WORDBREAK)!=0 && drawn;
+                        break;
+                    }
+                    bool selected=body[0]=='>';
+                    if (selected || (body[0]==' ' && body[1]==' ')) body+=2;
+                    SetTextColor(dc,selected ? RGB(214,177,106) : RGB(255,255,255));
                     int labelLength=(int)(value-body);
                     while (labelLength>0 && body[labelLength-1]==' ') --labelLength;
                     RECT labelBox=rect, valueBox=rect;
-                    labelBox.right=(LONG)width/2; valueBox.left=(LONG)width/2;
+                    labelBox.right=(LONG)width*3/5; valueBox.left=(LONG)width*3/5;
                     labelBox.bottom=valueBox.bottom=rect.top+(LONG)height*2;
                     drawn=DrawTextA(dc,body,labelLength,&labelBox,DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_NOPREFIX)!=0 && drawn;
                     int valueLength=rowEnd ? (int)(rowEnd-value) : (int)strlen(value);
                     drawn=DrawTextA(dc,value,valueLength,&valueBox,DT_RIGHT|DT_VCENTER|DT_SINGLELINE|DT_NOPREFIX)!=0 && drawn;
-                    if (rowEnd) {
-                        rect.top+=(LONG)height*4;
-                        drawn=DrawTextA(dc,rowEnd+1,-1,&rect,DT_LEFT|DT_TOP|DT_NOPREFIX|DT_WORDBREAK)!=0 && drawn;
-                    }
-                } else if (*body) drawn=DrawTextA(dc,body,-1,&rect,DT_LEFT|DT_TOP|DT_NOPREFIX|DT_WORDBREAK)!=0 && drawn;
+                    rect.top+=(LONG)height*3;
+                    if (!rowEnd) break;
+                    body=rowEnd+1;
+                }
             } else drawn=TextOutA(dc,2,0,contents,(int)strlen(contents));
             GdiFlush();
             BYTE *bytes = (BYTE *)pixels;

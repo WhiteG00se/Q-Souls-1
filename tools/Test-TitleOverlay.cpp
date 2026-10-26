@@ -5,7 +5,7 @@
 
 static BOOL qualityVisible = FALSE;
 static BOOL testQuality(char *text, size_t capacity) {
-    snprintf(text, capacity, "Q Souls\n\nFPS Cap < 120 >");
+    snprintf(text, capacity, "Q Souls\n\n  FPS < 60 (default) >\n> FOV (Y axis) < 48\xB0 (default) >\n  Camera Distance < 100%% (default) >");
     return qualityVisible;
 }
 static BOOL visible = TRUE;

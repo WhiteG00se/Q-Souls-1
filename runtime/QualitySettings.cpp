@@ -6,6 +6,7 @@
 #include <wchar.h>
 #include "QualitySettings.h"
 #include "QualityModel.h"
+#include "QualityCamera.h"
 #include "NativeCalls.h"
 #include "../third_party/ds1-fps-unlock/src/dsr/state.h"
 #include "../third_party/ds1-fps-unlock/src/dsr/profile.h"
@@ -16,6 +17,8 @@
 namespace {
 constexpr int requestFlag=70000980, doneFlag=70000981, readyFlag=70000983;
 NativeCalls openingHook;
+QualityCamera camera;
+unsigned selectedRow=0, fovDegrees=qualityDefaultFov, distancePercent=qualityDefaultDistance;
 uintptr_t flagsGlobal, worldGlobal;
 void (*setRegister)(int, int);
 std::atomic<int> fpsStatus{0};
@@ -71,29 +74,53 @@ bool writableFilePath(const wchar_t *path)
     }
     return true;
 }
-bool saveLimit(unsigned fps)
+bool saveSetting(const wchar_t *key,unsigned value)
 {
     if (!writableFilePath(settingsPath)) return false;
-    wchar_t value[16]; swprintf(value, 16, L"%u", fps);
-    return WritePrivateProfileStringW(L"Quality", L"FPSLimit", value, settingsPath) != FALSE;
+    wchar_t text[16]; swprintf(text, 16, L"%u", value);
+    return WritePrivateProfileStringW(L"Quality", key, text, settingsPath) != FALSE;
 }
 void moveLimit(int direction)
 {
     if (fpsStatus.load()!=1) return;
     unsigned current=g_target_fps.load(), next=qualityNextFps(current,direction);
     if (next==current) return;
-    if (!saveLimit(next)) { saveFailed=true; return; }
+    if (!saveSetting(L"FPSLimit",next)) { saveFailed=true; return; }
     saveFailed=false; g_target_fps.store(next);
+}
+void moveSetting(int direction)
+{
+    if (!selectedRow) { moveLimit(direction); return; }
+    unsigned &current=selectedRow==1 ? fovDegrees : distancePercent;
+    unsigned next=selectedRow==1 ? qualityNext(qualityFovDegrees,current,direction,qualityDefaultFov) :
+        qualityNext(qualityDistances,current,direction,qualityDefaultDistance);
+    if (next==current) return;
+    if (!saveSetting(selectedRow==1 ? L"FOVDegrees" : L"CameraDistancePercent",next)) { saveFailed=true; return; }
+    saveFailed=false; current=next;
+    if (selectedRow==1) qualityCameraFov(&camera,next); else qualityCameraDistance(&camera,next);
+}
+void loadCameraSettings()
+{
+    fovDegrees=GetPrivateProfileIntW(L"Quality",L"FOVDegrees",qualityDefaultFov,settingsPath);
+    distancePercent=GetPrivateProfileIntW(L"Quality",L"CameraDistancePercent",qualityDefaultDistance,settingsPath);
+    if (!qualityValid(qualityFovDegrees,fovDegrees)) fovDegrees=qualityDefaultFov;
+    if (!qualityValid(qualityDistances,distancePercent)) distancePercent=qualityDefaultDistance;
+    qualityCameraDistance(&camera,distancePercent); qualityCameraFov(&camera,fovDegrees);
 }
 BOOL qualityText(char *text,size_t capacity)
 {
     AcquireSRWLockShared(&panelLock);
     bool show=editing;
     if (show) {
-        const char *status=saveFailed ? "Could not save. FPS cap unchanged." :
+        const char *status=saveFailed ? "Could not save. Setting unchanged." :
             fpsStatus.load()<0 ? "FPS module failed. See .local/fps.log." :
             fpsStatus.load()==0 ? "FPS module is starting..." : "";
-        snprintf(text,capacity,"Q Souls\n\nFPS Cap < %u >%s%s",g_target_fps.load(),*status ? "\n\n" : "",status);
+        unsigned fps=g_target_fps.load();
+        snprintf(text,capacity,"Q Souls\n\n%sFPS < %u%s >\n%sFOV (Y axis) < %u\xB0%s >\n%sCamera Distance < %u%%%s >%s%s",
+            selectedRow==0 ? "> " : "  ",fps,qualityDefaultLabel(fps,qualityDefaultFps),
+            selectedRow==1 ? "> " : "  ",fovDegrees,qualityDefaultLabel(fovDegrees,qualityDefaultFov),
+            selectedRow==2 ? "> " : "  ",distancePercent,qualityDefaultLabel(distancePercent,qualityDefaultDistance),
+            *status ? "\n\n" : "",status);
     }
     ReleaseSRWLockShared(&panelLock); return show;
 }
@@ -120,14 +147,16 @@ void tickPanel(ULONGLONG now,volatile LONG *word,uintptr_t character,bool alive,
         endPanel(now); if (request) setFlag(word,doneFlag,true);
     }
     if (!editing && request && !flag(word,doneFlag) && alive && rendering) {
-        editing=true; saveFailed=false; previousButtons=buttons; repeatAt=now+350;
+        editing=true; saveFailed=false; selectedRow=0; previousButtons=buttons; repeatAt=now+350;
     }
     if (editing && focused) {
         unsigned pressed=buttons&~previousButtons;
-        if ((buttons&12) && now>=repeatAt) { pressed|=buttons&12; repeatAt=now+100; }
+        if ((buttons&15) && now>=repeatAt) { pressed|=buttons&15; repeatAt=now+100; }
         if (buttons!=previousButtons) repeatAt=now+350;
-        if ((pressed&12)==4) moveLimit(-1);
-        if ((pressed&12)==8) moveLimit(1);
+        if ((pressed&3)==1 && selectedRow) { --selectedRow; saveFailed=false; }
+        if ((pressed&3)==2 && selectedRow<2) { ++selectedRow; saveFailed=false; }
+        if ((pressed&12)==4) moveSetting(-1);
+        if ((pressed&12)==8) moveSetting(1);
         if (pressed&16) { setFlag(word,doneFlag,true); endPanel(now); }
         previousButtons=buttons;
     }
@@ -212,9 +241,14 @@ extern "C" DWORD initializeQualitySettings(const wchar_t *root,void (*log)(const
     if (error) { nativeRestoreCalls(&openingHook); return error; }
     error=initializeQualityInput();
     if (error) { nativeRestoreCalls(&openingHook); return error; }
+    error=qualityCameraPrepare(&camera,(BYTE *)GetModuleHandleW(nullptr));
+    if (error) { nativeRestoreCalls(&openingHook); return error; }
+    loadCameraSettings();
+    error=qualityCameraApply(&camera);
+    if (error) { nativeRestoreCalls(&openingHook); return error; }
     setQualityOverlay(qualityText); setQualityFrame(presented);
     HANDLE thread=CreateThread(nullptr,0,startFps,nullptr,0,nullptr);
-    if (!thread) return GetLastError();
+    if (!thread) { DWORD failure=GetLastError(); qualityCameraRestore(&camera); nativeRestoreCalls(&openingHook); return failure; }
     CloseHandle(thread);
     log("Q Souls uses the original Respec panel bridge; the native bonfire list is closed while editing.");
     return ERROR_SUCCESS;
