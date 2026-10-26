@@ -9,6 +9,7 @@
 #include <string.h>
 #include <wchar.h>
 #include "GamePresentation.h"
+#include "QualitySettings.h"
 
 namespace {
 template<class T> struct Com {
@@ -23,6 +24,7 @@ template<class T> struct Com {
 
 char label[64];
 BOOL (*isVisible)();
+BOOL (*qualityText)(char *, size_t);
 void (*writeLog)(const char *);
 
 
@@ -155,7 +157,7 @@ struct Renderer {
     Com<ID3D11SamplerState> sampler;
     Com<ID3D11RasterizerState> raster;
     UINT fontHeight = 0, textWidth = 0, textHeight = 0;
-    char cachedText[64] = {};
+    char cachedText[512] = {};
 
     void reset()
     {
@@ -211,7 +213,7 @@ struct Renderer {
         return current->CreateRasterizerState(&r, &raster.p);
     }
 
-    HRESULT makeText(UINT height)
+    HRESULT makeText(UINT height, const char *contents = label, bool panel = false)
     {
         HDC dc = CreateCompatibleDC(nullptr);
         if (!dc) return E_FAIL;
@@ -221,9 +223,9 @@ struct Renderer {
         if (!font) { DeleteDC(dc); return E_FAIL; }
         HGDIOBJ oldFont = SelectObject(dc, font);
         SIZE size = {};
-        BOOL measured = GetTextExtentPoint32A(dc, label, (int)strlen(label), &size);
-        UINT width = measured ? (UINT)size.cx + 4 : 0;
-        UINT rows = measured ? (UINT)size.cy + 2 : 0;
+        BOOL measured = GetTextExtentPoint32A(dc, contents, (int)strlen(contents), &size);
+        UINT width = panel ? height * 32 : measured ? (UINT)size.cx + 4 : 0;
+        UINT rows = panel ? height * 13 : measured ? (UINT)size.cy + 2 : 0;
         BITMAPINFO info = {};
         info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
         info.bmiHeader.biWidth = (LONG)width; info.bmiHeader.biHeight = -(LONG)rows;
@@ -235,13 +237,15 @@ struct Renderer {
             HGDIOBJ oldBitmap = SelectObject(dc, bitmap);
             memset(pixels, 0, (size_t)width * rows * 4);
             SetTextColor(dc, RGB(255,255,255)); SetBkMode(dc, TRANSPARENT);
-            BOOL drawn = TextOutA(dc, 2, 0, label, (int)strlen(label));
+            RECT rect = {(LONG)height, (LONG)height, (LONG)(width - height), (LONG)(rows - height)};
+            BOOL drawn = panel ? DrawTextA(dc, contents, -1, &rect, DT_LEFT | DT_TOP | DT_NOPREFIX) != 0 :
+                TextOutA(dc, 2, 0, contents, (int)strlen(contents));
             GdiFlush();
             BYTE *bytes = (BYTE *)pixels;
             for (size_t i = 0; i < (size_t)width * rows; ++i) {
                 BYTE shade = bytes[i*4];
-                bytes[i*4] = bytes[i*4+1] = bytes[i*4+2] = (BYTE)(shade * 0.8f);
-                bytes[i*4+3] = shade;
+                bytes[i*4] = bytes[i*4+1] = bytes[i*4+2] = (BYTE)((panel ? 20 : 0) + shade * 0.8f);
+                bytes[i*4+3] = panel ? 255 : shade;
             }
             D3D11_TEXTURE2D_DESC desc = {};
             desc.Width = width; desc.Height = rows; desc.MipLevels = desc.ArraySize = 1;
@@ -257,11 +261,11 @@ struct Renderer {
             SelectObject(dc, oldBitmap); DeleteObject(bitmap);
         }
         SelectObject(dc, oldFont); DeleteObject(font); DeleteDC(dc);
-        if (SUCCEEDED(hr)) { fontHeight = height; textWidth = width; textHeight = rows; snprintf(cachedText, sizeof(cachedText), "%s", label); }
+        if (SUCCEEDED(hr)) { fontHeight = height; textWidth = width; textHeight = rows; snprintf(cachedText, sizeof(cachedText), "%s", contents); }
         return hr;
     }
 
-    HRESULT draw(IDXGISwapChain *chain)
+    HRESULT draw(IDXGISwapChain *chain, const char *contents = label, bool panel = false)
     {
         Com<ID3D11Device> current;
         HRESULT hr = chain->GetDevice(__uuidof(ID3D11Device), (void **)&current.p);
@@ -278,8 +282,8 @@ struct Renderer {
         buffer->GetDesc(&desc);
         if (!desc.Width || !desc.Height) return S_FALSE;
         Layout place = layout(desc.Width, desc.Height);
-        if (place.font != fontHeight || !text.p || strcmp(label, cachedText)) {
-            hr = makeText(place.font);
+        if (place.font != fontHeight || !text.p || strcmp(contents, cachedText)) {
+            hr = makeText(place.font, contents, panel);
             if (FAILED(hr)) return hr;
         }
         Com<ID3D11RenderTargetView> target;
@@ -290,7 +294,8 @@ struct Renderer {
         context->OMSetRenderTargets(1, &target.p, nullptr);
         context->OMSetBlendState(blend.p, nullptr, ~0u);
         context->RSSetState(raster.p);
-        D3D11_VIEWPORT viewport = {place.right - (float)textWidth, place.top,
+        D3D11_VIEWPORT viewport = {panel ? (desc.Width - (float)textWidth) * 0.5f : place.right - (float)textWidth,
+                                  panel ? (desc.Height - (float)textHeight) * 0.5f : place.top,
                                   (float)textWidth, (float)textHeight, 0, 1};
         context->RSSetViewports(1, &viewport);
         context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
@@ -305,7 +310,7 @@ struct Renderer {
         // PipelineState restores the game bindings and releases our backbuffer target.
         return S_OK;
     }
-} renderer;
+} renderer, qualityRenderer;
 
 void **presentationSlot;
 
@@ -323,9 +328,12 @@ void report(HRESULT hr)
 HRESULT drawFrame(IDXGISwapChain *chain)
 {
     Lock guard(&renderLock);
-    HRESULT drawn = isVisible && isVisible() ? renderer.draw(chain) : S_OK;
+    char quality[512];
+    bool showQuality = qualityText && qualityText(quality, sizeof(quality));
+    HRESULT drawn = showQuality ? qualityRenderer.draw(chain, quality, true) :
+        isVisible && isVisible() ? renderer.draw(chain) : S_OK;
     report(drawn);
-    if (drawn == DXGI_ERROR_DEVICE_REMOVED || drawn == DXGI_ERROR_DEVICE_RESET) renderer.reset();
+    if (drawn == DXGI_ERROR_DEVICE_REMOVED || drawn == DXGI_ERROR_DEVICE_RESET) { renderer.reset(); qualityRenderer.reset(); }
     return drawn;
 }
 
@@ -351,4 +359,9 @@ DWORD configureTitleOverlay(const wchar_t *root, BYTE *site,
 extern "C" DWORD initializeTitleOverlay(const wchar_t *root, BOOL (*visible)(void), void (*log)(const char *))
 {
     return configureTitleOverlay(root, findGamePresentation((BYTE *)GetModuleHandleW(nullptr)), visible, log);
+}
+
+extern "C" void setQualityOverlay(BOOL (*text)(char *, size_t))
+{
+    Lock guard(&renderLock); qualityText = text;
 }

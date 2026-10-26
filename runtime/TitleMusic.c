@@ -9,6 +9,7 @@
 #include "TitleOverlay.h"
 #include "ControllerHelper.h"
 #include "IntroSkip.h"
+#include "QualitySettings.h"
 
 static HMODULE self;
 static HANDLE changed, ready;
@@ -634,6 +635,8 @@ __declspec(dllexport) DWORD WINAPI InitializeQSouls(void *unused)
     if (!cameraGlobal || !optionsGlobal) return ERROR_REVISION_MISMATCH;
     DWORD overlayError = initializeTitleOverlay(root, titleOverlayVisible, logMessage);
     if (overlayError) return overlayError;
+    DWORD qualityError = initializeQualitySettings(root, logMessage);
+    if (qualityError) return qualityError;
     DWORD respecError = initializeRespec(gameplayLoaded);
     if (respecError) return respecError;
     void **openSlot = findImport("binkw64.dll", "BinkOpen"), **closeSlot = findImport("binkw64.dll", "BinkClose");

@@ -6,7 +6,7 @@ using System.Text.RegularExpressions;
 
 // DSR BND3, FMG v1 and 64-bit ESD layouts: JKAnderson/SoulsFormats.
 // Keep native bonfire behavior; replace only the Level Up label and its availability.
-public static class RespecAssets
+public static partial class RespecAssets
 {
     public const int TextId = 15000990, FreePointsTextId = 109990;
     const int LevelUpText = 15000100, Data = 108;
@@ -324,7 +324,7 @@ public static class RespecAssets
         Need(bonfires > 0, "No compatible bonfire scripts found.");
         foreach (string name in new[] { "menu.drb", "menu.drb.dcx" }) {
             string path = Path.Combine(game, "menu", name); Need(File.Exists(path), "Missing required game component: " + path);
-            output.Add("menu\\" + name, PatchLevelUpLayout(File.ReadAllBytes(path)));
+            output.Add("menu\\" + name, PatchQualityLayout(PatchLevelUpLayout(File.ReadAllBytes(path))));
         }
         foreach (string language in Directory.GetDirectories(messages)) {
             string file = Path.Combine(language, "menu.msgbnd.dcx"); Need(File.Exists(file), "Missing required game component: " + file); var binder = new Binder(File.ReadAllBytes(file)); int count = 0;
@@ -334,6 +334,11 @@ public static class RespecAssets
             foreach (var entry in binder.Entries) if (entry.Name.EndsWith("\\Menu_general_text_.fmg", StringComparison.OrdinalIgnoreCase)) {
                 entry.Bytes = PatchFmg(entry.Bytes, FreePointsTitle(Path.GetFileName(language), catalog), FreePointsTextId); count++;
             }
+            int qualityLabels = 0;
+            foreach (var entry in binder.Entries) if (entry.Name.EndsWith("\\System_message_win32_.fmg", StringComparison.OrdinalIgnoreCase)) {
+                entry.Bytes = PatchFmg(entry.Bytes, "Q", QIconTextId); qualityLabels++;
+            }
+            Need(qualityLabels > 0, "Start category text missing: " + file);
             Need(count > 0, "General menu text missing: " + file); output.Add("msg\\" + Path.GetFileName(language) + "\\menu.msgbnd.dcx", binder.Write());
         }
         return output;

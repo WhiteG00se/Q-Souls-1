@@ -10,8 +10,15 @@ foreach ($file in @('DarkSoulsRemastered.exe', 'fmodex64.dll', 'fmod_event64.dll
 }
 New-Item -ItemType Directory -Path $temporary -Force | Out-Null
 $cppCompiler = Join-Path (Split-Path -Parent $Compiler) 'clang++.exe'
+. (Join-Path $PSScriptRoot 'Build-FpsObjects.ps1')
+$fpsObjects = @(Build-FpsObjects -Compiler $cppCompiler -Repository $repository -Temporary $temporary)
 $common = @('--target=x86_64-w64-mingw32', '-O2', '-Wall', '-Wextra', '-Werror')
 $cpp = @('-std=c++17', '-static', '-fno-exceptions', '-fno-rtti')
+& $cppCompiler @common @cpp (Join-Path $PSScriptRoot 'Test-Quality.cpp') $fpsObjects -ldbghelp -municode -o (Join-Path $temporary 'Test-Quality.exe')
+if ($LASTEXITCODE -ne 0) { throw 'Quality test build failed.' }
+& (Join-Path $temporary 'Test-Quality.exe') (Join-Path $game 'DarkSoulsRemastered.exe') (Join-Path $temporary ('quality-' + [Guid]::NewGuid().ToString('N')))
+if ($LASTEXITCODE -ne 0) { throw 'Quality tests failed.' }
+
 & $cppCompiler @common @cpp (Join-Path $PSScriptRoot 'Test-GamePresentation.cpp') -municode -o (Join-Path $temporary 'Test-GamePresentation.exe')
 if ($LASTEXITCODE -ne 0) { throw 'Game presentation test build failed.' }
 & (Join-Path $temporary 'Test-GamePresentation.exe') (Join-Path $game 'DarkSoulsRemastered.exe')
@@ -64,8 +71,8 @@ $fixture = Join-Path $temporary ([Guid]::NewGuid().ToString())
 if ($LASTEXITCODE -ne 0) { throw 'Overlay tests failed.' }
 & $Compiler @common -c (Join-Path $PSScriptRoot 'Test-TitleMusic.c') -o (Join-Path $temporary 'Test-TitleMusic.o')
 if ($LASTEXITCODE -ne 0) { throw 'Music test compilation failed.' }
-& $cppCompiler @common @cpp (Join-Path $temporary 'Test-TitleMusic.o') `
-    (Join-Path $repository 'runtime\TitleOverlay.cpp') (Join-Path $repository 'runtime\ControllerHelper.cpp') -lgdi32 -ldxguid -municode -o (Join-Path $temporary 'Test-TitleMusic.exe')
+& $cppCompiler @common @cpp $fpsObjects (Join-Path $repository 'runtime\QualitySettings.cpp') (Join-Path $temporary 'Test-TitleMusic.o') `
+    (Join-Path $repository 'runtime\TitleOverlay.cpp') (Join-Path $repository 'runtime\ControllerHelper.cpp') -lgdi32 -ldxguid -ldbghelp -municode -o (Join-Path $temporary 'Test-TitleMusic.exe')
 if ($LASTEXITCODE -ne 0) { throw 'Music test link failed.' }
 & (Join-Path $temporary 'Test-TitleMusic.exe') $game (Join-Path $repository 'assets\audio\title-theme.wav') (Join-Path $temporary 'music.log')
 if ($LASTEXITCODE -ne 0) { throw 'Music tests failed.' }

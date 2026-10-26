@@ -3,6 +3,11 @@
 #include <math.h>
 #define CHECK(ok, message) do { if (!(ok)) { fprintf(stderr, "FAIL: %s (line %d)\n", message, __LINE__); return 1; } } while (0)
 
+static BOOL qualityVisible = FALSE;
+static BOOL testQuality(char *text, size_t capacity) {
+    snprintf(text, capacity, "Q Souls\n\n> Quality settings\n\nFPS limit: < 120 FPS >\n\nLeft / Right: change\nBack: return");
+    return qualityVisible;
+}
 static BOOL visible = TRUE;
 static BOOL testVisible() { return visible; }
 static void testLog(const char *message) { fprintf(stderr, "%s\n", message); }
@@ -178,6 +183,8 @@ int wmain(int argc, wchar_t **argv)
     context->SetPredication(gamePredicate.p, FALSE);
     CHECK(SUCCEEDED(clear(chain.p, device.p, context.p)), "clear before pipeline restoration check");
     CHECK(SUCCEEDED(renderer.draw(chain.p)), "draw with existing game state");
+    setQualityOverlay(testQuality); qualityVisible = TRUE; visible = FALSE;
+    CHECK(SUCCEEDED(drawFrame(chain.p)), "child draws independently of title visibility");
     Com<ID3D11GeometryShader> restoredGeometry;
     context->GSGetShader(&restoredGeometry.p, nullptr, nullptr);
     CHECK(restoredGeometry.p == gameGeometry.p, "game geometry shader restored");
@@ -213,6 +220,11 @@ int wmain(int argc, wchar_t **argv)
     Com<ID3D11SamplerState> gotSampler;
     context->VSGetSamplers(4, 1, &gotSampler.p);
     CHECK(gotSampler.p == renderer.sampler.p, "unrelated sampler restored");
+    qualityVisible = FALSE;
+    CHECK(SUCCEEDED(clear(chain.p, device.p, context.p)) && SUCCEEDED(drawFrame(chain.p)), "child closed");
+    Pixels hiddenQuality;
+    CHECK(SUCCEEDED(pixels(chain.p, device.p, context.p, &hiddenQuality)) && !hiddenQuality.count, "child hides without a menu");
+    visible = TRUE;
     context->ClearState();
     CHECK(SUCCEEDED(chain->ResizeBuffers(1, 1280, 720, DXGI_FORMAT_UNKNOWN, 0)), "resize after overlay without retained backbuffer");
     CHECK(SUCCEEDED(clear(chain.p, device.p, context.p)) && SUCCEEDED(renderer.draw(chain.p)), "draw after resize");
@@ -235,6 +247,12 @@ int wmain(int argc, wchar_t **argv)
     };
     for (const Screen &screen : screens) {
         CHECK(SUCCEEDED(chain->ResizeBuffers(1, screen.width, screen.height, DXGI_FORMAT_UNKNOWN, 0)), "resolution resize");
+        qualityVisible = TRUE;
+        CHECK(SUCCEEDED(clear(chain.p, device.p, context.p)) && SUCCEEDED(drawFrame(chain.p)), "quality panel resolution draw");
+        Pixels panel;
+        CHECK(SUCCEEDED(pixels(chain.p, device.p, context.p, &panel)) && panel.count > 1000 &&
+            panel.minX > 0 && panel.maxX < screen.width && panel.minY > 0 && panel.maxY < screen.height, "quality panel stays inside screen");
+        qualityVisible = FALSE;
         CHECK(SUCCEEDED(clear(chain.p, device.p, context.p)) && SUCCEEDED(renderer.draw(chain.p)), "resolution draw");
         Pixels scaled;
         CHECK(SUCCEEDED(pixels(chain.p, device.p, context.p, &scaled)) && scaled.count > 100, "scaled label visible");
@@ -246,6 +264,7 @@ int wmain(int argc, wchar_t **argv)
     CHECK(SUCCEEDED(renderer.draw(chain.p)), "recreate renderer after device reset");
     CHECK(*(void ***)chain.p == nativeTable && nativeTable[8] == nativePresent, "all native graphics dispatch remains unchanged");
     renderer.reset();
+    qualityRenderer.reset(); setQualityOverlay(nullptr);
     chain.reset(); DestroyWindow(window);
     wchar_t fixturePath[MAX_PATH];
     swprintf(fixturePath, MAX_PATH, L"%ls\\VERSION.txt", argv[2]);

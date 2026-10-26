@@ -51,16 +51,45 @@ public static class RespecAssetChecks
             if (block.Key == "STR" || block.Key == "SHAP" || block.Key == "SHPR" || block.Key == "CTRL" || block.Key == "DLGO" || block.Key == "DLG") continue;
             Check(block.Value.Count == after[block.Key].Count && Equal(block.Value.Bytes, after[block.Key].Bytes), "Textures, control parameters, animations and schedules untouched.");
         }
-        Check(after["STR"].Count == before["STR"].Count + 2 && after["SHAP"].Count == before["SHAP"].Count + 2 && after["CTRL"].Count == before["CTRL"].Count + 2 && after["DLGO"].Count == before["DLGO"].Count + 2 && after["DLG"].Count == before["DLG"].Count, "Exactly one native label/value pair added.");
+        bool remastered = Encoding.ASCII.GetString(source, 0, 4) == "DCX\0";
+        int additions = remastered ? 4 : 2;
+        Check(after["STR"].Count == before["STR"].Count + additions && after["SHAP"].Count == before["SHAP"].Count + additions && after["CTRL"].Count == before["CTRL"].Count + additions && after["DLGO"].Count == before["DLGO"].Count + additions && after["DLG"].Count == before["DLG"].Count, "Only Free Points and the fifth Start category added.");
         foreach (string name in new[] { "SHAP", "CTRL" }) Check(Equal(Part(before[name].Bytes, 0, before[name].Count * 8), Part(after[name].Bytes, 0, before[name].Count * 8)), "Existing shape/control references preserved.");
-        Check(Equal(before["SHPR"].Bytes, Part(after["SHPR"].Bytes, 0, before["SHPR"].Bytes.Length)), "Existing geometry/style data untouched.");
-        int newRows = 0;
+        byte[] expectedParameters = (byte[])before["SHPR"].Bytes.Clone();
+        if (remastered) {
+            for (int g = 0; g < before["DLG"].Count; ++g) {
+                int at = g * 64;
+                if (LayoutName(before["STR"].Bytes, At(before["DLG"].Bytes, at)) != "R00-00") continue;
+                int start = At(before["DLG"].Bytes, at + 36), count = At(before["DLG"].Bytes, at + 32);
+                for (int j = 0; j < count; ++j) {
+                    int obj = start + j * 32;
+                    if (LayoutName(before["STR"].Bytes, At(before["DLGO"].Bytes, obj)) != "category_right") continue;
+                    int data = At(before["SHAP"].Bytes, At(before["DLGO"].Bytes, obj + 4) + 4);
+                    foreach (int offset in new[] {0, 4}) Array.Copy(BitConverter.GetBytes((short)(BitConverter.ToInt16(expectedParameters, data + offset) + 50)), 0, expectedParameters, data + offset, 2);
+                }
+            }
+        }
+        Check(Equal(expectedParameters, Part(after["SHPR"].Bytes, 0, expectedParameters.Length)), "Only the right shoulder guide shifts; original icon geometry/styles preserved.");
+        int newRows = 0, qualityWidgets = 0;
         for (int g = 0; g < before["DLG"].Count; ++g) {
             byte[] oldGroup = before["DLG"].Bytes, newGroup = after["DLG"].Bytes; int group = g * 64;
-            string name = LayoutName(before["STR"].Bytes, At(oldGroup, group)); bool level = name == "C01-03";
+            string name = LayoutName(before["STR"].Bytes, At(oldGroup, group)); bool level = name == "C01-03", quality = remastered && name == "R00-00";
             int count = At(oldGroup, group + 32), oldOffset = At(oldGroup, group + 36), newOffset = At(newGroup, group + 36);
-            Check(At(newGroup, group + 32) == count + (level ? 2 : 0) && Equal(Part(oldGroup, group, 32), Part(newGroup, group, 32)) && Equal(Part(oldGroup, group + 40, 24), Part(newGroup, group + 40, 24)), "All original group bounds and controls unchanged.");
+            Check(At(newGroup, group + 32) == count + (level || quality ? 2 : 0) && Equal(Part(oldGroup, group, 32), Part(newGroup, group, 32)) && Equal(Part(oldGroup, group + 40, 24), Part(newGroup, group + 40, 24)), "All original group bounds and controls unchanged.");
             for (int i = 0; i < count; ++i) Check(Equal(Part(before["DLGO"].Bytes, oldOffset + i * 32, 32), Part(after["DLGO"].Bytes, newOffset + i * 32, 32)), "Every original widget/navigation record unchanged.");
+            if (quality) {
+                int qualityX = -1;
+                for (int j = 0; j < 2; ++j) {
+                    int obj = newOffset + (count + j) * 32;
+                    Check(LayoutName(after["STR"].Bytes, At(after["DLGO"].Bytes, obj)) == (j == 0 ? "cursor0_4" : "icon_q_souls"), "New Q category cursor/glyph names.");
+                    int shape = At(after["DLGO"].Bytes, obj + 4), data = At(after["SHAP"].Bytes, shape + 4);
+                    int x = BitConverter.ToInt16(after["SHPR"].Bytes, data), y = BitConverter.ToInt16(after["SHPR"].Bytes, data + 2);
+                    Check(x >= 1100 && x < 1150 && y >= 64 && y < 80, "Q fits after the fourth icon in the horizontal bar.");
+                    if (j == 0) qualityX = x;
+                    else Check(x == qualityX + 6 && At(after["SHPR"].Bytes, data + 40) == RespecAssets.QIconTextId, "Q text is inside its isolated native hit target.");
+                    qualityWidgets++;
+                }
+            }
             if (!level) continue;
             for (int i = 0; i < 2; i++) {
                 int obj = newOffset + (count + i) * 32; byte[] objects = after["DLGO"].Bytes;
@@ -74,7 +103,11 @@ public static class RespecAssetChecks
                 Check(parameters[data + baseSize + 15] == 1 && At(parameters, data + baseSize + 24) == (i == 0 ? RespecAssets.FreePointsTextId : 201111), "Native FMG label and independent numeric variable used."); newRows++;
             }
         }
-        Check(newRows == 2, "Only Level Up gains a row.");
+        Check(newRows == 2 && qualityWidgets == (remastered ? 2 : 0), "Only intended Level Up and Start widgets added.");
+        if (remastered) {
+            bool duplicate = false; try { RespecAssets.PatchQualityLayout(output); } catch (InvalidDataException) { duplicate = true; }
+            Check(duplicate, "Duplicate quality layout refused.");
+        }
         bool rejected = false; try { RespecAssets.PatchLevelUpLayout(output); } catch (InvalidDataException) { rejected = true; }
         Check(rejected, "Already-patched layout rejected safely.");
     }
@@ -97,13 +130,13 @@ public static class RespecAssetChecks
                 Check(a.Name == b.Name && a.Id == b.Id && a.Flags == b.Flags, "Binder metadata preserved.");
                 if (Equal(a.Bytes, b.Bytes)) continue;
                 if (pair.Key.StartsWith("msg\\", StringComparison.Ordinal)) {
-                    bool general = a.Name.EndsWith("\\Menu_general_text_.fmg");
-                    Check(general || a.Name.EndsWith("\\Event_text_.fmg"), "Only bonfire and Free Points label FMGs changed.");
+                    bool general = a.Name.EndsWith("\\Menu_general_text_.fmg"), quality = a.Name.EndsWith("\\System_message_win32_.fmg");
+                    Check(general || quality || a.Name.EndsWith("\\Event_text_.fmg"), "Only bonfire, Free Points and Q glyph FMGs changed.");
                     var oldTexts = Texts(a.Bytes); var newTexts = Texts(b.Bytes);
                     if (general) Check(oldTexts.ContainsKey(201111) && oldTexts[201111] == "<?lvUpPcLuck?>", "All languages use the verified native numeric variable for the counter.");
-                    int textId = general ? RespecAssets.FreePointsTextId : RespecAssets.TextId;
+                    int textId = quality ? RespecAssets.QIconTextId : general ? RespecAssets.FreePointsTextId : RespecAssets.TextId;
                     string language = pair.Key.Split('\\')[1];
-                    string expected = general ? RespecAssets.FreePointsTitle(language) : RespecAssets.Title(language);
+                    string expected = quality ? "Q" : general ? RespecAssets.FreePointsTitle(language) : RespecAssets.Title(language);
                     Check(newTexts.Count == oldTexts.Count + 1 && newTexts[textId] == expected && !String.IsNullOrWhiteSpace(expected), "One correctly localized label added.");
                     foreach (var text in oldTexts) Check(newTexts[text.Key] == text.Value, "All native screen translations preserved.");
                     continue;

@@ -3,7 +3,7 @@ $ErrorActionPreference = 'Stop'
 $repository = Split-Path -Parent $PSScriptRoot
 $temporary = Join-Path 'D:\AI\Temp\Q-Souls-1\respec-assets' ([Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $temporary -Force | Out-Null
-Add-Type -Path @((Join-Path $repository 'launcher\StartingClasses.cs'), (Join-Path $repository 'launcher\RespecAssets.cs'), (Join-Path $repository 'launcher\HellAssets.cs'), (Join-Path $PSScriptRoot 'Test-RespecAssets.cs')) -ReferencedAssemblies @('System.dll', 'System.Core.dll', 'System.Xml.dll')
+Add-Type -Path @((Join-Path $repository 'launcher\StartingClasses.cs'), (Join-Path $repository 'launcher\RespecAssets.cs'), (Join-Path $repository 'launcher\QualityAssets.cs'), (Join-Path $repository 'launcher\HellAssets.cs'), (Join-Path $PSScriptRoot 'Test-RespecAssets.cs')) -ReferencedAssemblies @('System.dll', 'System.Core.dll', 'System.Xml.dll')
 $originals = @(Get-ChildItem -LiteralPath (Join-Path $GamePath 'script\talk'), (Join-Path $GamePath 'event'), (Join-Path $GamePath 'msg') -Recurse -File)
 $originals += @(Get-Item -LiteralPath (Join-Path $GamePath 'menu\menu.drb'), (Join-Path $GamePath 'menu\menu.drb.dcx'))
 $originals += @(Get-Item -LiteralPath (Join-Path $GamePath 'map\MapStudio\m10_02_00_00.msb'), (Join-Path $GamePath 'map\MapStudio\m14_01_00_00.msb'))
