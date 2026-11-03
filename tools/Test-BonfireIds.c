@@ -43,13 +43,13 @@ int wmain(int argc, wchar_t **argv)
     typedef int (*Lookup)(int);
     Lookup lookup = (Lookup)(void *)code;
     CHECK(lookup(1410970) == -1, "old Hell actor is rejected by the game's native lookup");
-    CHECK(lookup(1410965) == 1411965, "corrected Hell actor resolves to its bonfire object");
+    CHECK(lookup(1410966) == 1411966, "corrected Cursed Arena actor resolves to its bonfire object");
     CHECK(lookup(-1) == -1, "invalid actor remains rejected");
     for (int suffix = 1940; suffix < 1980; ++suffix) {
         int object = 1410000 + suffix, expected = suffix >= 1950 && suffix <= 1969 ? object : -1;
         CHECK(lookup(object - 1000) == expected, "exact native bonfire slot boundaries");
     }
     VirtualFree(code, 0, MEM_RELEASE); UnmapViewOfFile(image); CloseHandle(mapping); CloseHandle(file);
-    puts("PASS: native bonfire arithmetic rejects the old 1970 slot, accepts the corrected 1965 slot, and enforces the exact 1950..1969 bounds. Game not launched.");
+    puts("PASS: native bonfire arithmetic rejects the old 1970 slot, accepts the corrected 1966 slot, and enforces the exact 1950..1969 bounds. Game not launched.");
     return 0;
 }

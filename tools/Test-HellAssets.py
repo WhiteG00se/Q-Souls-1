@@ -314,9 +314,9 @@ for bank in light.draw_params_0:
 assert set(output_textures)==original_names|expected_added
 print('PASS: Firelink bonfire lighting, fog and exposure; exact ambient reflection textures with private IDs; original Izalith textures and rows unchanged.')
 
-bonfire = next(o for o in m.objects if o.entity_id == 1411965)
-actor = next(c for c in m.characters if c.entity_id == 1410965)
-spawn = next(s for s in m.spawn_points if s.entity_id == 1412965)
+bonfire = next(o for o in m.objects if o.entity_id == 1411966)
+actor = next(c for c in m.characters if c.entity_id == 1410966)
+spawn = next(s for s in m.spawn_points if s.entity_id == 1412966)
 arrival = next(p for p in m.player_starts if p.entity_id == 1410971)
 col = next(c for c in m.collisions if c.name == 'h9900B1')
 part = next(p for p in m.map_pieces if p.name == 'm9900B1')

@@ -56,12 +56,13 @@ for output in (TEMP, RECIPES):
     output.mkdir(parents=True, exist_ok=True)
 MAP = 'm14_01_00_00'
 CENTRE = np.array([1500., -380., 100.])
-BONFIRE, ACTOR, SPAWN, ARRIVAL = 1411965, 1410965, 1412965, 1410971
+BONFIRE, ACTOR, SPAWN, ARRIVAL = 1411966, 1410966, 1412966, 1410971
 FIRELINK_ARRIVAL = 1020971
 # Native EzState bonfire lookup rejects object-ID suffixes outside 1950..1969.
 assert 1950 <= BONFIRE % 10000 <= 1969
 assert ACTOR + 1000 == BONFIRE and SPAWN - 1000 == BONFIRE
-BONFIRE_FLAG = 11410944
+# Native Izalith bonfire flags step down by 8 for each object suffix.
+BONFIRE_FLAG = 11410992 - 8 * (BONFIRE - 1411960)
 TO_HELL, TO_FIRELINK = 11025950, 11415950
 SEGMENTS = 128
 
